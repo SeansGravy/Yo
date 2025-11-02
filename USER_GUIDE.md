@@ -27,7 +27,7 @@ Ollama installed and running
 👉 https://ollama.com/download
 
 2️⃣ Clone the Repository
-git clone https://github.com/<your-username>/yo-rag.git
+git clone https://github.com/SeansGravy/yo-rag.git
 cd yo-rag
 
 3️⃣ Install Dependencies
