@@ -1,1 +1,26 @@
-fastapi\nlangchain\nmilvus\nollama\npython-dotenv\nrequests\nuvicorn
+# --- Core framework ---
+fastapi
+uvicorn[standard]
+python-dotenv
+requests
+
+# --- LangChain stack ---
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-ollama
+langchain-milvus
+pymilvus
+ollama
+
+# --- Voice I/O (for v0.2) ---
+faster-whisper
+piper-tts
+sounddevice
+SpeechRecognition
+
+# --- Utility / parsing ---
+pandas
+tqdm
+numpy
