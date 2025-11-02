@@ -1,0 +1,1 @@
+fastapi\nlangchain\nmilvus\nollama\npython-dotenv\nrequests\nuvicorn
