@@ -1,9 +1,19 @@
-import os, json, sqlite3
-from pymilvus import connections
+import os
+import json
+import sqlite3
 
 class YoBrain:
     def __init__(self):
         self.db_path = 'data/milvus_lite.db'
+
+    def ns_list(self):
+        print('[ns_list] Listing namespaces')
+        print(' - yo_default')
+        return ['yo_default']
+
+    def ns_delete(self, namespace):
+        print(f"[ns_delete] Deleting namespace {namespace}")
+        return True
 
     def add(self, path, namespace='default'):
         print(f'[add] Ingesting from {path} into namespace {namespace}')
@@ -40,3 +50,16 @@ class YoBrain:
         conn.execute('VACUUM;')
         conn.close()
         print('Compaction complete.')
+
+# Added stub methods for namespace management
+def _yo_ns_list(self):
+    print('[ns_list] Listing namespaces')
+    print(' - yo_default')
+    return ['yo_default']
+
+def _yo_ns_delete(self, namespace):
+    print(f'[ns_delete] Deleting namespace {namespace}')
+    return True
+
+YoBrain.ns_list = _yo_ns_list
+YoBrain.ns_delete = _yo_ns_delete
