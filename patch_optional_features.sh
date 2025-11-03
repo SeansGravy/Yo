@@ -1,3 +1,12 @@
+#!/bin/bash
+# ============================================
+# Yo Optional Features Patch
+# Auto-index verification + namespace commands
+# ============================================
+
+echo "🔧 Adding auto-index verification + namespace management..."
+
+cat > yo/brain.py <<'EOF'
 # -*- coding: utf-8 -*-
 """
 yo.brain — adds auto-index creation and namespace list/delete commands
@@ -152,31 +161,46 @@ class YoBrain:
             prompt=f"Summarize the following knowledge base:\n\n{text[:8000]}")
         print("\n📘 Summary:\n")
         print(resp["response"])
+EOF
 
-    # ---- Cache commands ----
-    def _list_cache(self):
-        """List cached web queries"""
-        from pathlib import Path
-        import json
-        CACHE_PATH = Path("data/web_cache.json")
-        if not CACHE_PATH.exists():
-            print("ℹ️ No cached queries yet.")
-            return
-        with open(CACHE_PATH, "r", encoding="utf-8") as f:
-            cache = json.load(f)
-        if not cache:
-            print("ℹ️ No cached queries yet.")
-            return
-        print("🧾 Cached queries:")
-        for q, data in cache.items():
-            print(f" - {q} (cached {data['timestamp']})")
+# CLI update
+cat > yo/cli.py <<'EOF'
+"""
+yo.cli — includes namespace commands
+"""
+import argparse
+from yo.brain import YoBrain
 
-    def _clear_cache(self):
-        """Clear cached web queries"""
-        from pathlib import Path
-        CACHE_PATH = Path("data/web_cache.json")
-        if CACHE_PATH.exists():
-            CACHE_PATH.unlink()
-            print("🧹 Cache cleared.")
+def main():
+    parser = argparse.ArgumentParser(description="Yo — Your Local Second Brain")
+    parser.add_argument("command", choices=["add","ask","summarize","ns"])
+    parser.add_argument("arg", nargs="?", default=None)
+    parser.add_argument("--ns", default="default")
+    parser.add_argument("--web", action="store_true")
+    args = parser.parse_args()
+
+    brain = YoBrain()
+
+    if args.command == "add":
+        brain.ingest(args.arg, namespace=args.ns)
+    elif args.command == "ask":
+        brain.ask(args.arg, namespace=args.ns, web=args.web)
+    elif args.command == "summarize":
+        brain.summarize(namespace=args.ns)
+    elif args.command == "ns":
+        if args.arg == "list":
+            brain.ns_list()
+        elif args.arg == "delete":
+            brain.ns_delete(args.ns)
         else:
-            print("ℹ️ No cache file found.")
+            print("Usage:\n  yo ns list\n  yo ns delete --ns <name>")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+echo "✅ Optional features added!"
+echo "Try:"
+echo "  python3 -m yo.cli ns list"
+echo "  python3 -m yo.cli ns delete --ns default"
+echo "  python3 -m yo.cli add ./docs/ --ns test"

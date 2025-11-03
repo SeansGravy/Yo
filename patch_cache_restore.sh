@@ -1,3 +1,11 @@
+#!/bin/bash
+# =====================================================
+# Restore top-level "cache" CLI commands for Yo
+# =====================================================
+
+echo "🔧 Restoring cache commands to Yo CLI..."
+
+cat > yo/cli.py <<'EOF'
 """
 yo.cli — unified CLI with cache + ns support
 """
@@ -37,3 +45,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+EOF
+
+echo "✅ Cache commands restored."
+echo "Try:"
+echo "  python3 -m yo.cli cache list"
+echo "  python3 -m yo.cli cache clear"
