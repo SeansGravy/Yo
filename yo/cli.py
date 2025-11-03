@@ -52,6 +52,8 @@ def main():
             print("Usage:\n  yo ns list\n  yo ns delete --ns <name>")
 
     elif args.command == "cache":
+    elif args.command == "compact":
+        brain.compact()
         if args.arg == "list":
             brain._list_cache()
         elif args.arg == "clear":
