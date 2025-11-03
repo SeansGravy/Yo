@@ -106,48 +106,7 @@ class YoBrain:
     def _ensure_collection(self, namespace: str) -> Collection:
         name = self._collection_name(namespace)
         if name in utility.list_collections():
-            collection = Collection(name)
-
-            # Older databases created before the CLI refactor only stored
-            # two fields (id + embedding).  Newer versions expect text and
-            # source metadata as well.  When we detect a legacy schema we
-            # transparently recreate the collection so inserts match the
-            # schema Milvus advertises.
-            expected = {
-                "id": DataType.INT64,
-                "text": DataType.VARCHAR,
-                "source": DataType.VARCHAR,
-                "embedding": DataType.FLOAT_VECTOR,
-            }
-            actual = {field.name: field for field in collection.schema.fields}
-
-            schema_mismatch = False
-            for field_name, field_type in expected.items():
-                field = actual.get(field_name)
-                if field is None or field.dtype != field_type:
-                    schema_mismatch = True
-                    break
-
-            if not schema_mismatch:
-                embedding_field = actual.get("embedding")
-                dim = None
-                if embedding_field is not None:
-                    params = getattr(embedding_field, "params", {}) or {}
-                    dim = params.get("dim")
-                    if dim is None:
-                        dim = getattr(embedding_field, "dim", None)
-                if dim not in (None, EMBED_DIM):
-                    schema_mismatch = True
-
-            if schema_mismatch:
-                print(
-                    "⚠️  Existing collection schema is incompatible with the current "
-                    "Yo version. Recreating collection and dropping old data."
-                )
-                collection.release()
-                utility.drop_collection(name)
-            else:
-                return collection
+            return Collection(name)
 
         schema = CollectionSchema(
             fields=[
