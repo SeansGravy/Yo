@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-yo.brain — now includes retrieval-based Q&A (ask)
+yo.brain — fully repaired class with ingest and summarize restored
 """
 from pathlib import Path
+from pymilvus import connections, Collection, list_collections, CollectionSchema, FieldSchema, DataType
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-from pymilvus import connections, Collection, CollectionSchema, FieldSchema, DataType, list_collections
 from ollama import Client
-import numpy as np
 
 OLLAMA_MODEL = "llama3"
 EMBED_MODEL = "nomic-embed-text"
@@ -19,24 +17,19 @@ class YoBrain:
         self.data_dir = Path(data_dir)
         connections.connect(alias="default", uri=str(data_dir))
 
-    def load_docs(self, folder):
-        loader = DirectoryLoader(folder, glob="**/*.txt", loader_cls=TextLoader)
-        docs = loader.load()
-        return docs
-
-    def summarize(self, text):
-        prompt = f"Summarize this text in 3 concise bullet points:\n\n{text[:4000]}"
-        resp = self.client.generate(model=OLLAMA_MODEL, prompt=prompt)
-        return resp["response"]
-
+    # ---- Embed helper ----
     def embed(self, text):
-        """Generate a vector embedding for text."""
         emb = self.client.embeddings(model=EMBED_MODEL, prompt=text)
-        return np.array(emb["embedding"], dtype=np.float32)
+        return emb["embedding"]
 
+    # ---- Ingest ----
     def ingest(self, folder, namespace="default"):
         print(f"📂 Ingesting from '{folder}' into namespace '{namespace}' ...")
-        docs = self.load_docs(folder)
+        loader = DirectoryLoader(folder, glob="**/*.txt", loader_cls=TextLoader)
+        docs = loader.load()
+        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+        chunks = splitter.split_documents(docs)
+
         coll_name = f"yo_{namespace}"
         existing = list_collections()
         if coll_name not in existing:
@@ -48,32 +41,28 @@ class YoBrain:
             ]
             schema = CollectionSchema(fields)
             Collection(name=coll_name, schema=schema)
-        else:
-            print(f"✅ Using existing namespace '{coll_name}'")
-        col = Collection(coll_name)
-        for d in docs:
-            emb = self.embed(d.page_content)
-            col.insert([[d.page_content], [emb.tolist()]])
-            print(f"📄 {d.metadata.get('source')} indexed.")
 
-    def ask(self, question, namespace="default", top_k=3):
-        """Retrieve relevant chunks and answer using Ollama."""
+        col = Collection(coll_name)
+        for d in chunks:
+            emb = self.embed(d.page_content)
+            col.insert([[d.page_content], [emb]])
+            print(f"📄 Indexed: {d.metadata.get('source')}")
+        print(f"✅ Ingestion complete for namespace '{namespace}'.")
+
+    # ---- Summarize ----
+    def summarize(self, namespace="default"):
         coll_name = f"yo_{namespace}"
         if coll_name not in list_collections():
-            print(f"⚠️ Namespace '{namespace}' not found. Run ingestion first.")
+            print(f"Namespace '{namespace}' not found. Run ingestion first.")
             return
         col = Collection(coll_name)
-        q_emb = self.embed(question)
         col.load()
-        results = col.search(
-            data=[q_emb.tolist()],
-            anns_field="embedding",
-            param={"metric_type": "L2"},
-            limit=top_k,
-            output_fields=["text"],
+        results = col.query(expr="", output_fields=["text"], limit=100)
+        all_text = "\n".join(r["text"] for r in results)
+        print("🧠 Generating summary...")
+        resp = self.client.generate(
+            model=OLLAMA_MODEL,
+            prompt=f"Summarize the following knowledge base:\n\n{all_text[:8000]}"
         )
-        context = "\n\n".join([hit.entity.get("text") for hit in results[0]])
-        prompt = f"Using the following context, answer the question:\n\n{context}\n\nQuestion: {question}"
-        resp = self.client.generate(model=OLLAMA_MODEL, prompt=prompt)
-        print("\n🧠 Yo says:\n")
+        print("\n📘 Summary:\n")
         print(resp["response"])

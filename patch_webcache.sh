@@ -1,6 +1,15 @@
+#!/bin/bash
+# =======================================
+# Yo Web Cache Patch Script
+# Adds local caching for web search results
+# =======================================
+
+echo "🔧 Patching Yo for web cache support..."
+
+cat > yo/brain.py <<'EOF'
 # -*- coding: utf-8 -*-
 """
-yo.brain — Web-aware retrieval + cache management (list/clear)
+yo.brain — Web-aware retrieval with caching support.
 """
 from pathlib import Path
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
@@ -19,7 +28,7 @@ class YoBrain:
         self.data_dir = Path(data_dir)
         connections.connect(alias="default", uri=str(data_dir))
 
-    # ---- Cache utilities ----
+    # ---- Web cache helpers ----
     def _load_cache(self):
         if CACHE_PATH.exists():
             with open(CACHE_PATH, "r", encoding="utf-8") as f:
@@ -31,28 +40,28 @@ class YoBrain:
         with open(CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=2)
 
-    def _clear_cache(self):
-        if CACHE_PATH.exists():
-            CACHE_PATH.unlink()
-            print("🧹 Cache cleared.")
-        else:
-            print("ℹ️ No cache found to clear.")
-
-    def _list_cache(self):
+    def _get_cached_web_results(self, query, max_age_hours=24):
         cache = self._load_cache()
-        if not cache:
-            print("ℹ️ No cached queries yet.")
-            return
-        print("🧾 Cached queries:")
-        for q, data in cache.items():
-            print(f" - {q} (cached {data['timestamp']})")
+        if query in cache:
+            ts = datetime.fromisoformat(cache[query]["timestamp"])
+            if (datetime.now() - ts).total_seconds() < max_age_hours * 3600:
+                return cache[query]["results"]
+        return None
+
+    def _store_web_results(self, query, results):
+        cache = self._load_cache()
+        cache[query] = {
+            "timestamp": datetime.now().isoformat(),
+            "results": results
+        }
+        self._save_cache(cache)
 
     # ---- Embeddings ----
     def embed(self, text):
         emb = self.client.embeddings(model=EMBED_MODEL, prompt=text)
         return emb["embedding"]
 
-    # ---- Ask method ----
+    # ---- Ask with optional web ----
     def ask(self, question, namespace="default", web=False, top_k=3):
         coll_name = f"yo_{namespace}"
         context_parts = []
@@ -74,13 +83,12 @@ class YoBrain:
         else:
             context_parts.append("[Memory Results]\n(No local results found.)")
 
-        # Step 2: Optional web search with cache
+        # Step 2: Optional web context (with caching)
         if web:
-            cache = self._load_cache()
-            cached = cache.get(question)
+            cached = self._get_cached_web_results(question)
             if cached:
                 print("💾 Using cached web context...")
-                text_snippets = cached["results"]
+                text_snippets = cached
             else:
                 print("🌐 Fetching live web context...")
                 try:
@@ -88,17 +96,13 @@ class YoBrain:
                     r = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
                     snippets = re.findall(r'<a rel="nofollow" class="result__a".*?>(.*?)</a>', r.text)
                     text_snippets = [re.sub(r"<.*?>", "", s) for s in snippets[:3]]
-                    cache[question] = {
-                        "timestamp": datetime.now().isoformat(),
-                        "results": text_snippets
-                    }
-                    self._save_cache(cache)
+                    self._store_web_results(question, text_snippets)
                 except Exception as e:
                     text_snippets = [f"Error fetching web data: {e}"]
             web_context = "\n".join(text_snippets)
             context_parts.append(f"[Web Results]\n{web_context}")
 
-        # Step 3: Combine & answer
+        # Step 3: Combine and generate
         combined_context = "\n\n".join(context_parts)
         print("\n📚 Context Used:\n")
         print(combined_context)
@@ -108,3 +112,10 @@ class YoBrain:
         resp = self.client.generate(model=OLLAMA_MODEL, prompt=prompt)
         print("💬 Yo says:\n")
         print(resp["response"])
+EOF
+
+echo "✅ Web caching patch applied!"
+echo "You can test with:"
+echo "    python3 -m yo.cli ask 'What is LangChain?' --web"
+echo "Re-run the same query twice to see caching in action (💾 message)."
+
