@@ -1,114 +1,210 @@
-🧠 YO RAG PIPELINE — USER GUIDE
-🚀 Overview
+# 🧠 Yo User Guide
 
-Yo RAG is a local Retrieval-Augmented Generation (RAG) pipeline built around
+Yo is your local second brain. It ingests plain-text documents, stores their embeddings in Milvus Lite, and lets you interrogate that knowledge base offline with an Ollama-powered language model. This guide walks through setup, day-to-day usage, and troubleshooting tips.
 
-Milvus Lite (embedded vector database)
+---
 
-LangChain (retrieval & orchestration)
+## 1. Installation
 
-Ollama (LLMs + embeddings)
+### 1.1 Grab the code
 
-It lets you ingest local text files and query them conversationally — all offline.
+Clone the official repository:
 
-🧩 Key Features
-Feature	Description
-Local Milvus Lite	Stores vector embeddings in a lightweight .db file—no external server.
-Ollama Integration	Uses local Ollama models for both embeddings and generation.
-LangChain Framework	Provides retrieval, prompt-templating, and chain management.
-Fully Offline	No external API keys or network calls required.
-Persistent Data	Keeps your vectors in data/milvus_lite.db between runs.
-⚙️ Installation
-1️⃣ Prerequisites
+```bash
+git clone https://github.com/SeansGravy/Yo.git
+cd Yo
+```
 
-Python ≥ 3.10
+### 1.2 Prerequisites
 
-Ollama installed and running
-👉 https://ollama.com/download
+* Python 3.10+
+* [Ollama](https://ollama.com/download) installed and running locally
+* macOS or Linux shell (Windows WSL works too)
 
-2️⃣ Clone the Repository
-git clone https://github.com/SeansGravy/yo-rag.git
-cd yo-rag
+### 1.3 Create a virtual environment
 
-3️⃣ Install Dependencies
-pip install -U langchain langchain-core langchain-text-splitters langchain-milvus langchain-ollama pymilvus ollama
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-4️⃣ Pull Required Ollama Models
-ollama pull nomic-embed-text   # for embeddings
-ollama pull llama3             # or your preferred LLM
+### 1.4 Install dependencies
 
-🏗️ Project Structure
-yo-rag/
-├── rag/
-│   └── pipeline.py        # main RAG pipeline
-├── docs/                  # your source documents
-├── data/                  # local Milvus Lite DB
-└── USER_GUIDE.md          # this file
+```bash
+pip install -r requirements.txt
+```
 
-🧠 Usage
-🪣 Ingest Documents
+### 1.5 Pull required Ollama models
 
-Add one or more .txt or .md files to docs/, then run:
+```bash
+ollama pull llama3             # generation model
+ollama pull nomic-embed-text   # embedding model
+```
 
-python3 -m rag.pipeline --ingest ./docs/
+---
 
+## 2. Project Layout
 
-✅ Expected output:
+```
+Yo/
+├── data/                  # Milvus Lite SQLite store + web cache
+│   ├── milvus_lite.db     # main database (auto-created)
+│   ├── recoveries/        # locked DB backups (auto-rotated)
+│   └── web_cache.json     # cached DuckDuckGo snippets (24h TTL)
+├── docs/                  # drop your `.txt` source files here (optional)
+├── yo/                    # Python package
+│   ├── brain.py           # YoBrain orchestration logic
+│   └── cli.py             # command-line interface
+├── yo_full_test.sh        # optional regression script (called by `verify`)
+└── Yo_Handoff_Report.md   # current project context & roadmap
+```
 
-🗄️  Using Milvus Lite at /path/to/data/milvus_lite.db
-✅ Connected to Milvus Lite
-Ingesting 3 chunks from ./docs/…
-✅ Ingestion complete.
+---
 
-💬 Ask Questions
+## 3. Core Concepts
 
-Query your knowledge base:
+* **Namespaces** – Logical buckets of knowledge. Each namespace maps to a Milvus collection named `yo_<namespace>`. The default is `yo_default`.
+* **Chunks** – Documents are split into ~800-character chunks with overlaps for better retrieval.
+* **Web cache** – When you run commands with `--web`, Yo scrapes short snippets from DuckDuckGo and caches the results in `data/web_cache.json` for 24 hours.
 
-python3 -m rag.pipeline --ask "What is LangChain used for?"
+---
 
+## 4. CLI Reference
 
-🧠 Example response:
+All interactions go through the CLI entry point:
 
-LangChain helps developers build applications that combine large language models with external data and tools.
+```bash
+python3 -m yo.cli <command> [options]
+```
 
-🔁 Combine Both
+For a quick refresher on available subcommands at any time:
 
-You can chain ingestion and query in one line:
+```bash
+python3 -m yo.cli --help
+```
 
-python3 -m rag.pipeline --ingest ./docs/ --ask "Summarize my documents"
+### 4.1 `add` — Ingest local files
 
-🧩 Example Workflow
-mkdir docs
-echo "LangChain connects LLMs to data and tools." > docs/langchain.txt
-python3 -m rag.pipeline --ingest ./docs/
-python3 -m rag.pipeline --ask "What does LangChain do?"
+```bash
+python3 -m yo.cli add ./docs/ --ns research
+```
 
-⚡ Troubleshooting
-Problem	Cause	Fix
-404 model not found	The embedding model isn’t downloaded.	Run ollama pull nomic-embed-text.
-Fail connecting to server on localhost:19530	Milvus defaulted to server mode.	Ensure pipeline.py uses langchain-milvus and a local .db URI.
-No .txt files found	Docs folder empty.	Add .txt or .md files to ./docs/.
-Slow responses	Large docs or small model	Try smaller docs or a faster Ollama model (mistral, phi3, etc.).
-🧭 Future Enhancements
+* Accepts a path to a directory or a single file.
+* Recursively ingests `.txt` files using `langchain` loaders with encoding autodetect.
+* Creates the namespace (Milvus collection) if it does not exist.
+* Emits the number of chunks created and confirms when ingestion is complete.
 
-Web UI (FastAPI or Gradio)
+### 4.2 `ask` — Query the knowledge base
 
-Automatic summarization after ingestion
+```bash
+python3 -m yo.cli ask "What is Yo?" --ns research
+python3 -m yo.cli ask "Latest LangChain updates" --ns research --web
+```
 
-Metadata tagging (per-file topics)
+* Retrieves the top matches from Milvus using cosine similarity (inner product).
+* Prints the context Yo used before streaming the response.
+* `--web` blends cached or freshly-fetched DuckDuckGo snippets (24h TTL).
 
-Periodic re-ingestion script
+### 4.3 `summarize` — Summarize a namespace
 
-Multi-collection support in Milvus
+```bash
+python3 -m yo.cli summarize --ns research
+```
 
-🪪 Version Info
-Component	Version
-Python	≥ 3.10
-LangChain	0.3+
-LangChain-Milvus	latest
-Ollama	current local
-Milvus Lite	Embedded via pymilvus
-🤝 Credits
+* Loads up to 500 stored chunks and asks the LLM for a narrative summary.
+* Errors if the namespace is empty or missing.
 
-Built by Sean & Logos, 2025
-With guidance from LangChain, Milvus, and Ollama open-source communities.
+### 4.4 `ns` — Manage namespaces
+
+```bash
+python3 -m yo.cli ns list
+python3 -m yo.cli ns delete --ns scratch
+```
+
+* `list` shows all namespaces currently available.
+* `delete` drops the specified namespace and its data after confirmation.
+
+### 4.5 `cache` — Inspect or clear web cache
+
+```bash
+python3 -m yo.cli cache list
+python3 -m yo.cli cache clear
+```
+
+* `list` prints cached queries with timestamps.
+* `clear` removes `data/web_cache.json` if it exists.
+
+### 4.6 `compact` — Vacuum the database
+
+```bash
+python3 -m yo.cli compact
+```
+
+* Runs SQLite `VACUUM` on `data/milvus_lite.db` to reclaim space.
+* Prints the size delta (MiB before/after).
+
+### 4.7 `doctor` — Diagnose local setup issues
+
+```bash
+python3 -m yo.cli doctor
+```
+
+* Confirms Python version, Ollama availability, and required Python packages.
+* Verifies that `yo_full_test.sh` and the `data/` directory are present.
+* Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
+
+### 4.8 `verify` — Run the regression suite
+
+```bash
+python3 -m yo.cli verify
+```
+
+* Executes `yo_full_test.sh` (if the script is present).
+* Logs the output to `yo_test_results_<timestamp>.log`.
+
+---
+
+## 5. Example Session
+
+```bash
+# 1. Ingest documentation into the default namespace
+python3 -m yo.cli add ./docs/ --ns default
+
+# 2. Ask purely from memory
+python3 -m yo.cli ask "Summarize the project goals" --ns default
+
+# 3. Ask with web augmentation
+python3 -m yo.cli ask "What's new in LangChain 0.3?" --ns default --web
+
+# 4. Get an overview of everything stored
+python3 -m yo.cli summarize --ns default
+
+# 5. Compact the database when it grows large
+python3 -m yo.cli compact
+```
+
+---
+
+## 6. Troubleshooting & Tips
+
+| Issue | Likely Cause | Fix |
+| ----- | ------------ | --- |
+| `Source path not found` | Typo in the ingest path | Double-check the file or folder path. |
+| "No ingestible documents" | Directory lacks `.txt` files | Convert your sources to `.txt`. Markdown/PDF support is on the roadmap. |
+| Milvus Lite lock message | Another process was using the DB | Yo automatically moves the locked DB into `data/recoveries/` and recreates a clean one. |
+| `ask` returns no memory results | Namespace missing or empty | Verify ingestion ran successfully and that you used the correct `--ns`. |
+| Web lookup failed | Offline or DuckDuckGo blocked | Retry without `--web`, or investigate network connectivity. |
+| CLI shows dependency errors | Missing local setup steps | Run `python3 -m yo.cli doctor` to see which requirement is missing. |
+| `git pull` would overwrite files | You have local edits not yet saved | Run `git status` to inspect, then either commit (`git add` → `git commit`) or stash (`git stash --include-untracked`) before pulling again. |
+
+**Tip:** Keep `yo_full_test.sh` up-to-date with your end-to-end checks. `yo.cli verify` depends on it.
+
+---
+
+## 7. Roadmap Snapshot
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
+
+---
+
+Happy researching! 🎉
