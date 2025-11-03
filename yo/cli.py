@@ -1,29 +1,24 @@
 """
-yo.cli — Command-line interface for Yo Brain.
-Commands:
-    yo add <folder>
-    yo ask "<question>"
-    yo summarize
+yo.cli — now supports `yo ask "question"`
 """
-
 import argparse
 from yo.brain import YoBrain
 
 def main():
     parser = argparse.ArgumentParser(description="Yo — Your Local Second Brain")
     parser.add_argument("command", choices=["add", "ask", "summarize"])
-    parser.add_argument("arg", nargs="?", default=None)
+    parser.add_argument("arg", nargs="?", default=None, help="Path or question")
+    parser.add_argument("--ns", default="default", help="Namespace (collection name)")
     args = parser.parse_args()
 
     brain = YoBrain()
 
     if args.command == "add":
-        brain.ingest(args.arg)
+        brain.ingest(args.arg, namespace=args.ns)
     elif args.command == "ask":
-        print("💡 Coming soon: interactive Q&A.")
+        brain.ask(args.arg, namespace=args.ns)
     elif args.command == "summarize":
-        print("🧠 Summarizing memory contents... (stub)")
+        print("🧠 Summarization placeholder — coming soon!")
 
 if __name__ == "__main__":
     main()
-

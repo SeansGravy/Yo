@@ -53,7 +53,7 @@ class YoBrain:
         col = Collection(coll_name)
         for d in docs:
             emb = self.embed(d.page_content)
-            col.insert([[d.page_content], [emb.tolist()]])
+            col.insert([[None], [d.page_content], [emb.tolist()]])
             print(f"📄 {d.metadata.get('source')} indexed.")
 
     def ask(self, question, namespace="default", top_k=3):

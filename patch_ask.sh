@@ -1,3 +1,10 @@
+#!/bin/bash
+# =========================================
+# Yo Retrieval + Ask Feature Patch Script
+# =========================================
+
+echo "🔧 Patching yo/brain.py with retrieval + ask method..."
+cat > yo/brain.py <<'EOF'
 # -*- coding: utf-8 -*-
 """
 yo.brain — now includes retrieval-based Q&A (ask)
@@ -53,7 +60,7 @@ class YoBrain:
         col = Collection(coll_name)
         for d in docs:
             emb = self.embed(d.page_content)
-            col.insert([[d.page_content], [emb.tolist()]])
+            col.insert([[None], [d.page_content], [emb.tolist()]])
             print(f"📄 {d.metadata.get('source')} indexed.")
 
     def ask(self, question, namespace="default", top_k=3):
@@ -77,3 +84,36 @@ class YoBrain:
         resp = self.client.generate(model=OLLAMA_MODEL, prompt=prompt)
         print("\n🧠 Yo says:\n")
         print(resp["response"])
+EOF
+
+echo "🔧 Patching yo/cli.py to wire up ask()..."
+cat > yo/cli.py <<'EOF'
+"""
+yo.cli — now supports `yo ask "question"`
+"""
+import argparse
+from yo.brain import YoBrain
+
+def main():
+    parser = argparse.ArgumentParser(description="Yo — Your Local Second Brain")
+    parser.add_argument("command", choices=["add", "ask", "summarize"])
+    parser.add_argument("arg", nargs="?", default=None, help="Path or question")
+    parser.add_argument("--ns", default="default", help="Namespace (collection name)")
+    args = parser.parse_args()
+
+    brain = YoBrain()
+
+    if args.command == "add":
+        brain.ingest(args.arg, namespace=args.ns)
+    elif args.command == "ask":
+        brain.ask(args.arg, namespace=args.ns)
+    elif args.command == "summarize":
+        print("🧠 Summarization placeholder — coming soon!")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+echo "✅ Patch complete! Try it out:"
+echo "    python3 -m yo.cli ask 'What is Ollama?'"
+
