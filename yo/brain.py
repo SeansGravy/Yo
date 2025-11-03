@@ -4,7 +4,6 @@ from pymilvus import connections
 class YoBrain:
     def __init__(self):
         self.db_path = 'data/milvus_lite.db'
-        connections.connect(alias='default', host='localhost', port='19530')
 
     def add(self, path, namespace='default'):
         print(f'[add] Ingesting from {path} into namespace {namespace}')
