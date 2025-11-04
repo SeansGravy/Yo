@@ -1,65 +1,683 @@
-import os
+"""Core Yo brain logic.
+
+This module provides the main orchestration layer for the Yo CLI.  It handles
+Milvus Lite lifecycle management, document ingestion, retrieval, summarisation,
+and simple web-context caching for the optional web-aware mode.
+"""
+
+from __future__ import annotations
+
 import json
+import re
 import sqlite3
+import time
+from datetime import datetime, timedelta
+from importlib import util as import_util
+from pathlib import Path
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+import requests
+from langchain_community.document_loaders import TextLoader
+
+try:  # Optional rich loaders
+    from langchain_community.document_loaders import PyPDFLoader
+except ImportError:  # pragma: no cover - optional dependency
+    PyPDFLoader = None
+
+try:  # Markdown with layout awareness
+    from langchain_community.document_loaders import UnstructuredMarkdownLoader
+except ImportError:  # pragma: no cover - optional dependency
+    UnstructuredMarkdownLoader = None
+
+try:  # OCR-capable PDF loader
+    from langchain_community.document_loaders import UnstructuredPDFLoader
+except ImportError:  # pragma: no cover - optional dependency
+    UnstructuredPDFLoader = None
+
+try:  # Source code loader with metadata
+    from langchain_community.document_loaders import PythonLoader
+except ImportError:  # pragma: no cover - optional dependency
+    PythonLoader = None
+from langchain_ollama import OllamaEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from ollama import Client
+from pymilvus import (
+    Collection,
+    CollectionSchema,
+    DataType,
+    FieldSchema,
+    connections,
+    utility,
+)
+
+
+EMBED_DIM = 768
+CACHE_TTL = timedelta(hours=24)
+
+SUPPORTED_LOADERS = {"auto", "text", "markdown", "pdf", "code"}
+CODE_EXTENSIONS = {
+    ".py",
+    ".ipynb",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".c",
+    ".cpp",
+    ".cs",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".json",
+}
+
 
 class YoBrain:
-    def __init__(self):
-        self.db_path = 'data/milvus_lite.db'
+    """Primary orchestration layer for Yo."""
 
-    def ns_list(self):
-        print('[ns_list] Listing namespaces')
-        print(' - yo_default')
-        return ['yo_default']
+    def __init__(
+        self,
+        data_dir: Path | str = "data",
+        model_name: str = "llama3",
+        embed_model: str = "nomic-embed-text",
+        auto_compact_threshold: int = 100 * 1024 * 1024,
+    ) -> None:
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = self.data_dir / "milvus_lite.db"
+        self.recover_dir = self.data_dir / "recoveries"
+        self.recover_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_path = self.data_dir / "web_cache.json"
 
-    def ns_delete(self, namespace):
-        print(f"[ns_delete] Deleting namespace {namespace}")
-        return True
+        self.model_name = model_name
+        self.embed_model = embed_model
 
-    def add(self, path, namespace='default'):
-        print(f'[add] Ingesting from {path} into namespace {namespace}')
-        return True
+        self.client = Client()
+        self.embeddings = OllamaEmbeddings(model=self.embed_model)
+        self.auto_compact_threshold = auto_compact_threshold
+        self._loader_warnings: Dict[str, bool] = {}
 
-    def ask(self, query, namespace='default', web=False):
-        print(f'[ask] Query: {query} (ns={namespace}, web={web})')
-        return f'Placeholder answer for {query}'
+        self._connect_milvus()
 
-    def summarize(self, namespace='default'):
-        print(f'[summarize] Summarizing namespace {namespace}')
-        return f'Summary for namespace {namespace}'
+    # ------------------------------------------------------------------
+    # Milvus helpers
+    # ------------------------------------------------------------------
+    def _connect_milvus(self) -> None:
+        """Connect to Milvus Lite, handling locked database recovery."""
 
-    def _list_cache(self):
-        cache_file = 'data/web_cache.json'
-        if not os.path.exists(cache_file):
-            print('No cache file found.')
+        try:
+            connections.disconnect(alias="default")
+        except Exception:
+            pass
+
+        try:
+            connections.connect(alias="default", uri=str(self.db_path))
             return
-        with open(cache_file, 'r') as f:
-            data = json.load(f)
-        print(json.dumps(data, indent=2))
+        except Exception as exc:  # pragma: no cover - defensive path
+            message = str(exc).lower()
+            if "locked" not in message and "database" not in message:
+                raise
 
-    def _clear_cache(self):
-        cache_file = 'data/web_cache.json'
-        if os.path.exists(cache_file):
-            os.remove(cache_file)
-            print('Cache cleared.')
+        # Database is likely locked – rename it and retry.
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = self.recover_dir / f"milvus_lite_recover_{timestamp}.db"
+        if self.db_path.exists():
+            self.db_path.replace(backup_path)
+            self._prune_recoveries(keep=3)
+            print(
+                "⚠️  Milvus Lite database was locked. "
+                f"Moved existing file to {backup_path.name} and recreating."
+            )
+
+        connections.connect(alias="default", uri=str(self.db_path))
+
+    def _prune_recoveries(self, keep: int = 3) -> None:
+        backups = sorted(self.recover_dir.glob("milvus_lite_recover_*.db"))
+        while len(backups) > keep:
+            oldest = backups.pop(0)
+            try:
+                oldest.unlink()
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _collection_name(namespace: str) -> str:
+        return f"yo_{namespace}"
+
+    def _ensure_collection(self, namespace: str) -> Collection:
+        name = self._collection_name(namespace)
+        if name in utility.list_collections():
+            collection = Collection(name)
+
+            # Older databases created before the CLI refactor only stored
+            # two fields (id + embedding).  Newer versions expect text and
+            # source metadata as well.  When we detect a legacy schema we
+            # transparently recreate the collection so inserts match the
+            # schema Milvus advertises.
+            expected = {
+                "id": DataType.INT64,
+                "text": DataType.VARCHAR,
+                "source": DataType.VARCHAR,
+                "embedding": DataType.FLOAT_VECTOR,
+            }
+            actual = {field.name: field for field in collection.schema.fields}
+
+            schema_mismatch = False
+            for field_name, field_type in expected.items():
+                field = actual.get(field_name)
+                if field is None or field.dtype != field_type:
+                    schema_mismatch = True
+                    break
+
+            if not schema_mismatch:
+                embedding_field = actual.get("embedding")
+                dim = None
+                if embedding_field is not None:
+                    params = getattr(embedding_field, "params", {}) or {}
+                    dim = params.get("dim")
+                    if dim is None:
+                        dim = getattr(embedding_field, "dim", None)
+                if dim not in (None, EMBED_DIM):
+                    schema_mismatch = True
+
+            if schema_mismatch:
+                print(
+                    "⚠️  Existing collection schema is incompatible with the current "
+                    "Yo version. Recreating collection and dropping old data."
+                )
+                collection.release()
+                utility.drop_collection(name)
+            else:
+                return collection
+
+        schema = CollectionSchema(
+            fields=[
+                FieldSchema(
+                    name="id",
+                    dtype=DataType.INT64,
+                    is_primary=True,
+                    auto_id=False,
+                ),
+                FieldSchema(
+                    name="text",
+                    dtype=DataType.VARCHAR,
+                    max_length=65535,
+                ),
+                FieldSchema(
+                    name="source",
+                    dtype=DataType.VARCHAR,
+                    max_length=1024,
+                ),
+                FieldSchema(
+                    name="embedding",
+                    dtype=DataType.FLOAT_VECTOR,
+                    dim=EMBED_DIM,
+                ),
+            ],
+            description=f"Yo collection for namespace {namespace}",
+        )
+        collection = Collection(name, schema)
+        collection.create_index(
+            field_name="embedding",
+            index_params={"index_type": "AUTOINDEX", "metric_type": "IP"},
+        )
+        return collection
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+    def _load_cache(self) -> dict:
+        if not self.cache_path.exists():
+            return {}
+
+        try:
+            with open(self.cache_path, "r", encoding="utf-8") as fh:
+                cache = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            print("⚠️  Cache file was corrupted. Resetting web cache.")
+            try:
+                self.cache_path.unlink()
+            except FileNotFoundError:
+                pass
+            return {}
+
+        pruned = False
+        for query, entry in list(cache.items()):
+            if not self._cache_fresh(entry):
+                cache.pop(query, None)
+                pruned = True
+
+        if pruned:
+            self._save_cache(cache)
+
+        return cache
+
+    def _save_cache(self, cache: dict) -> None:
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.cache_path, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, indent=2)
+
+    def _cache_fresh(self, entry: dict) -> bool:
+        if not entry:
+            return False
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+        except Exception:
+            return False
+        return datetime.now() - ts < CACHE_TTL
+
+    def _fetch_web(self, query: str) -> List[str]:
+        cache = self._load_cache()
+        cached = cache.get(query)
+        if cached and self._cache_fresh(cached):
+            print("💾 Using cached web context…")
+            return cached["results"]
+
+        print("🌐 Fetching live web context…")
+        try:
+            url = "https://duckduckgo.com/html/"
+            params = {"q": query}
+            resp = requests.get(
+                url,
+                params=params,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # pragma: no cover - network failure path
+            return [f"Web lookup failed: {exc}"]
+
+        snippets = re.findall(
+            r'<a rel="nofollow" class="result__a".*?>(.*?)</a>', resp.text
+        )
+        cleaned = [re.sub(r"<.*?>", "", snippet) for snippet in snippets[:3]]
+        cache[query] = {
+            "timestamp": datetime.now().isoformat(),
+            "results": cleaned,
+        }
+        self._save_cache(cache)
+        return cleaned
+
+    # ------------------------------------------------------------------
+    # Public operations
+    # ------------------------------------------------------------------
+    def ingest(
+        self,
+        source: str,
+        namespace: str = "default",
+        loader: str | None = None,
+    ) -> None:
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(f"Source path not found: {source}")
+
+        loader_choice = self._normalise_loader(loader)
+        documents = self._load_documents(path, loader_choice)
+        if not documents:
+            print(f"⚠️  No ingestible documents found under {source}.")
+            return
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
+        chunks = splitter.split_documents(documents)
+        print(
+            f"🧩 Created {len(chunks)} chunks for namespace '{namespace}' "
+            f"using '{loader_choice}' loader."
+        )
+
+        collection = self._ensure_collection(namespace)
+
+        payloads = [chunk.page_content for chunk in chunks]
+        sources = [str(chunk.metadata.get("source", "")) for chunk in chunks]
+        embeddings = self.embeddings.embed_documents(payloads)
+
+        base_id = int(time.time() * 1000)
+        ids = [base_id + idx for idx in range(len(chunks))]
+
+        collection.insert([ids, payloads, sources, embeddings])
+        collection.flush()
+        print("✅ Ingestion complete.")
+        self._maybe_auto_compact()
+
+    def ask(self, question: str, namespace: str = "default", web: bool = False) -> str:
+        if not question:
+            raise ValueError("A question is required for ask().")
+
+        coll_name = self._collection_name(namespace)
+        memory_context, citations = self._search_memory(coll_name, question)
+
+        context_parts = ["[Memory Results]\n" + memory_context]
+
+        if web:
+            web_snippets = self._fetch_web(question)
+            context_parts.append("[Web Results]\n" + "\n".join(web_snippets))
+
+        combined_context = "\n\n".join(context_parts)
+        print("\n📚 Context Used:\n")
+        print(combined_context)
+
+        answer = self._synthesise_answer(question, combined_context)
+        print("\n💬 Yo says:\n")
+        print(answer)
+        return answer
+
+    def summarize(self, namespace: str = "default") -> str:
+        coll_name = self._collection_name(namespace)
+        if coll_name not in utility.list_collections():
+            raise ValueError(f"Namespace '{namespace}' does not exist.")
+
+        collection = Collection(coll_name)
+        collection.load()
+        records = collection.query(
+            expr="id >= 0",
+            output_fields=["text"],
+            limit=500,
+        )
+        if not records:
+            raise ValueError(f"Namespace '{namespace}' is empty.")
+
+        combined = "\n\n".join(row["text"] for row in records)
+        prompt = (
+            "Summarize the following knowledge base for future reference. "
+            "Highlight key facts and topics.\n\n" + combined
+        )
+        response = self.client.generate(model=self.model_name, prompt=prompt)
+        summary = response["response"]
+        print("\n🧾 Summary:\n")
+        print(summary)
+        return summary
+
+    def ns_list(self) -> List[str]:
+        namespaces = []
+        for name in utility.list_collections():
+            if name.startswith("yo_"):
+                namespaces.append(name[len("yo_"):])
+        if namespaces:
+            print("🗂️  Available namespaces:")
+            for ns in sorted(namespaces):
+                print(f" - {ns}")
         else:
-            print('No cache to clear.')
+            print("(no namespaces found)")
+        return sorted(namespaces)
 
-    def compact(self):
-        print('Running SQLite VACUUM on Milvus Lite DB...')
+    def ns_delete(self, namespace: str) -> None:
+        coll_name = self._collection_name(namespace)
+        if coll_name not in utility.list_collections():
+            raise ValueError(f"Namespace '{namespace}' does not exist.")
+        utility.drop_collection(coll_name)
+        print(f"🗑️  Deleted namespace '{namespace}'.")
+
+    def _list_cache(self) -> None:
+        cache = self._load_cache()
+        if not cache:
+            print("ℹ️  Cache is empty.")
+            return
+        print("🧾 Cached queries:")
+        for query, payload in cache.items():
+            print(f" - {query} (cached {payload.get('timestamp', 'unknown')})")
+
+    def _clear_cache(self) -> None:
+        if self.cache_path.exists():
+            self.cache_path.unlink()
+            print("🧹 Cache cleared.")
+        else:
+            print("ℹ️  Cache file not found.")
+
+    def compact(self, auto: bool = False) -> None:
+        if not self.db_path.exists():
+            print("ℹ️  No database file to compact.")
+            return
+        before = self.db_path.stat().st_size
         conn = sqlite3.connect(self.db_path)
-        conn.execute('VACUUM;')
+        conn.execute("VACUUM;")
         conn.close()
-        print('Compaction complete.')
+        after = self.db_path.stat().st_size
+        delta = before - after
+        message = (
+            f"Size reduced by {delta / (1024 ** 2):.2f} MiB "
+            f"({before / (1024 ** 2):.2f} → {after / (1024 ** 2):.2f} MiB)."
+        )
+        if auto:
+            print(f"✅ Auto-compaction complete. {message}")
+        else:
+            print(f"VACUUM complete. {message}")
 
-# Added stub methods for namespace management
-def _yo_ns_list(self):
-    print('[ns_list] Listing namespaces')
-    print(' - yo_default')
-    return ['yo_default']
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _normalise_loader(self, loader: str | None) -> str:
+        if loader is None:
+            return "auto"
 
-def _yo_ns_delete(self, namespace):
-    print(f'[ns_delete] Deleting namespace {namespace}')
-    return True
+        normalized = loader.strip().lower()
+        alias_map = {
+            "": "auto",
+            "default": "auto",
+            "md": "markdown",
+            "markdown": "markdown",
+            "pdf": "pdf",
+            "code": "code",
+            "py": "code",
+            "text": "text",
+            "txt": "text",
+            "auto": "auto",
+        }
+        normalized = alias_map.get(normalized, normalized)
+        if normalized not in SUPPORTED_LOADERS:
+            raise ValueError(
+                "Unsupported loader. Choose from auto, text, markdown, pdf, or code."
+            )
+        return normalized
 
-YoBrain.ns_list = _yo_ns_list
-YoBrain.ns_delete = _yo_ns_delete
+    def _load_documents(self, path: Path, loader: str) -> List:
+        if path.is_file():
+            target_loader = loader if loader != "auto" else self._infer_loader(path)
+            return self._load_file(path, target_loader)
+
+        documents: List = []
+        seen: set[Path] = set()
+        order: Sequence[str]
+        if loader == "auto":
+            order = ("markdown", "pdf", "code", "text")
+        else:
+            order = (loader,)
+
+        for choice in order:
+            for file_path in self._iter_files(path, choice):
+                if file_path in seen:
+                    continue
+                seen.add(file_path)
+                documents.extend(self._load_file(file_path, choice))
+        return documents
+
+    def _iter_files(self, base: Path, loader: str) -> Iterable[Path]:
+        if loader == "markdown":
+            extensions = {".md", ".markdown"}
+        elif loader == "pdf":
+            extensions = {".pdf"}
+        elif loader == "code":
+            extensions = CODE_EXTENSIONS
+        elif loader == "text":
+            extensions = {".txt", ".text", ".rst"}
+        else:
+            extensions = set()
+
+        for file_path in sorted(base.rglob("*")):
+            if not file_path.is_file():
+                continue
+            if not extensions or file_path.suffix.lower() in extensions:
+                yield file_path
+
+    def _infer_loader(self, path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix in {".md", ".markdown"}:
+            return "markdown"
+        if suffix == ".pdf":
+            return "pdf"
+        if suffix in CODE_EXTENSIONS:
+            return "code"
+        return "text"
+
+    def _load_file(self, file_path: Path, loader: str) -> List:
+        if loader == "markdown":
+            return self._load_markdown(file_path)
+        if loader == "pdf":
+            return self._load_pdf(file_path)
+        if loader == "code":
+            return self._load_code(file_path)
+        return self._load_text(file_path)
+
+    def _load_text(self, file_path: Path) -> List:
+        loader = TextLoader(str(file_path), autodetect_encoding=True)
+        return loader.load()
+
+    def _load_markdown(self, file_path: Path) -> List:
+        if UnstructuredMarkdownLoader is None:
+            self._warn_once(
+                "markdown_fallback",
+                "Install unstructured[local-inference] for richer Markdown parsing. "
+                "Falling back to plain text.",
+            )
+            return self._load_text(file_path)
+
+        try:
+            loader = UnstructuredMarkdownLoader(str(file_path))
+            return loader.load()
+        except Exception as exc:  # pragma: no cover - loader failure fallback
+            self._warn_once(
+                "markdown_loader_error",
+                f"UnstructuredMarkdownLoader failed for {file_path.name}: {exc}. "
+                "Falling back to plain text.",
+            )
+            return self._load_text(file_path)
+
+    def _load_pdf(self, file_path: Path) -> List:
+        documents: List = []
+        if PyPDFLoader is None:
+            self._warn_once(
+                "pdf_loader_missing",
+                "Install langchain-community with PDF extras to enable PyPDFLoader. "
+                "Attempting OCR fallback.",
+            )
+        else:
+            try:
+                documents = PyPDFLoader(str(file_path)).load()
+            except Exception as exc:  # pragma: no cover - loader failure fallback
+                self._warn_once(
+                    "pdf_loader_error",
+                    f"PyPDFLoader failed for {file_path.name}: {exc}. Attempting OCR fallback.",
+                )
+                documents = []
+
+        if documents and any(doc.page_content.strip() for doc in documents):
+            return documents
+
+        if UnstructuredPDFLoader is None:
+            self._warn_once(
+                "pdf_ocr_missing",
+                "Install unstructured[local-inference] and pytesseract to OCR scanned PDFs.",
+            )
+            if documents:
+                return documents
+            return self._load_text(file_path)
+
+        loader_kwargs = {}
+        if import_util.find_spec("pytesseract") is not None:
+            loader_kwargs["strategy"] = "hi_res"
+        else:
+            self._warn_once(
+                "pdf_pytesseract_missing",
+                "Install pytesseract to enable high-resolution OCR for scanned PDFs.",
+            )
+
+        try:
+            ocr_documents = UnstructuredPDFLoader(str(file_path), **loader_kwargs).load()
+        except Exception as exc:  # pragma: no cover - loader failure fallback
+            self._warn_once(
+                "pdf_ocr_error",
+                f"OCR fallback failed for {file_path.name}: {exc}.",
+            )
+            return documents
+
+        return ocr_documents or documents
+
+    def _load_code(self, file_path: Path) -> List:
+        suffix = file_path.suffix.lower()
+        if suffix == ".py" and PythonLoader is not None:
+            try:
+                loader = PythonLoader(str(file_path))
+                return loader.load()
+            except Exception as exc:  # pragma: no cover - loader failure fallback
+                self._warn_once(
+                    "python_loader_error",
+                    f"PythonLoader failed for {file_path.name}: {exc}. Falling back to text.",
+                )
+        return self._load_text(file_path)
+
+    def _warn_once(self, key: str, message: str) -> None:
+        if self._loader_warnings.get(key):
+            return
+        print(f"⚠️  {message}")
+        self._loader_warnings[key] = True
+
+    def _maybe_auto_compact(self) -> None:
+        if self.auto_compact_threshold <= 0:
+            return
+        if not self.db_path.exists():
+            return
+        size = self.db_path.stat().st_size
+        if size < self.auto_compact_threshold:
+            return
+        threshold_mib = self.auto_compact_threshold / (1024 ** 2)
+        print(
+            f"🧽 Milvus Lite store is {size / (1024 ** 2):.2f} MiB (>{threshold_mib:.0f} MiB). "
+            "Running auto-compaction…"
+        )
+        self.compact(auto=True)
+
+    def _search_memory(self, coll_name: str, question: str) -> Tuple[str, List[str]]:
+        if coll_name not in utility.list_collections():
+            return "(No local results found.)", []
+
+        collection = Collection(coll_name)
+        collection.load()
+        query_vec = self.embeddings.embed_query(question)
+        results = collection.search(
+            data=[query_vec],
+            anns_field="embedding",
+            param={"metric_type": "IP"},
+            limit=4,
+            output_fields=["text", "source"],
+        )
+
+        if not results or not results[0]:
+            return "(No local results found.)", []
+
+        chunks = []
+        citations = []
+        for hit in results[0]:
+            text = hit.entity.get("text", "")
+            source = hit.entity.get("source", "")
+            chunks.append(text if not source else f"{text}\n(Source: {source})")
+            if source:
+                citations.append(source)
+        return "\n\n".join(chunks), citations
+
+    def _synthesise_answer(self, question: str, context: str) -> str:
+        prompt = (
+            "You are Yo, a helpful local research assistant. "
+            "Answer using only the supplied context. "
+            "If the context is empty, say you do not have enough information.\n\n"
+            f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+        )
+        response = self.client.generate(model=self.model_name, prompt=prompt)
+        return response["response"]
+
