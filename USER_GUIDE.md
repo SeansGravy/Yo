@@ -205,13 +205,19 @@ python3 -m yo.cli compact
 
 ## 6. Lite Web UI Preview
 
-A FastAPI stub for the upcoming Lite UI lives in `yo/webui.py`. Launch it with Uvicorn to explore the prototype status page:
+The Lite UI now ships with a FastAPI app in `yo/webui.py`. Launch it with Uvicorn to open the dashboard:
 
 ```bash
 uvicorn yo.webui:app --reload
 ```
 
-Then open [http://localhost:8000/ui](http://localhost:8000/ui) to view current namespaces and confirm the backend is reachable. You can also poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for a JSON payload containing backend availability plus last-ingest timestamps for each namespace. Future milestones will extend these endpoints with ingestion progress and interactive controls.
+Open [http://localhost:8000/ui](http://localhost:8000/ui) to:
+
+* Review Milvus Lite and Ollama health (including detected versions) at a glance.
+* Inspect each namespace’s last-ingested timestamp along with cumulative document and chunk counts.
+* Upload one or more files directly into any namespace—select the target namespace, choose your files, and the UI will call the same ingestion pipeline used by the CLI. The uploader is disabled automatically when Milvus Lite or Ollama are missing, and the warning panel explains what needs to be installed.
+
+Need machine-readable data? Hit [http://localhost:8000/api/status](http://localhost:8000/api/status) for JSON containing backend readiness, namespace metrics, and the ingestion enablement flag the UI relies on.
 
 ---
 

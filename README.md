@@ -135,14 +135,19 @@ of failing outright.
 
 ## 🔭 Lite UI Preview
 
-Phase 1.5 will introduce a lightweight web interface. A FastAPI stub now lives in `yo/webui.py` so you can experiment locally:
+Phase 1.5 introduces the first interactive Lite UI. Launch the FastAPI app from `yo/webui.py` to explore it locally:
 
 ```bash
 uvicorn yo.webui:app --reload
 ```
 
-Visit [http://localhost:8000/ui](http://localhost:8000/ui) to see a simple status page that reuses YoBrain for namespace listings. The view will grow to expose ingestion progress and controls as the Lite UI milestone lands.
-You can also poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for a JSON snapshot containing backend availability, namespaces, and their last-ingest timestamps.
+Visit [http://localhost:8000/ui](http://localhost:8000/ui) for a dashboard that now includes:
+
+* ✅ Backend health indicators for Milvus Lite and the Ollama runtime (with detected versions).
+* 📂 A namespace table showing the last-ingested timestamp plus cumulative document and chunk counts.
+* 📤 A file uploader that lets you ingest new content into any namespace without leaving the browser. The UI automatically disables ingestion controls when Milvus Lite or Ollama are missing so you know what to install next.
+
+Need raw data? Poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for JSON that includes the namespace metrics, backend readiness, and ingestion enablement flags used by the UI.
 
 ---
 

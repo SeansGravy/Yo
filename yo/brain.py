@@ -13,7 +13,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
@@ -176,7 +176,7 @@ class YoBrain:
         with open(self.cache_path, "w", encoding="utf-8") as fh:
             json.dump(cache, fh, indent=2)
 
-    def _load_namespace_meta(self) -> Dict[str, Dict[str, str]]:
+    def _load_namespace_meta(self) -> Dict[str, Dict[str, Any]]:
         if not self.meta_path.exists():
             return {}
 
@@ -191,14 +191,27 @@ class YoBrain:
 
         return {str(key): value for key, value in meta.items() if isinstance(value, dict)}
 
-    def _save_namespace_meta(self, meta: Dict[str, Dict[str, str]]) -> None:
+    def _save_namespace_meta(self, meta: Dict[str, Dict[str, Any]]) -> None:
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.meta_path, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2)
 
-    def _update_namespace_meta(self, namespace: str) -> None:
+    def _update_namespace_meta(
+        self,
+        namespace: str,
+        *,
+        documents: int | None = None,
+        chunks: int | None = None,
+    ) -> None:
         meta = self._load_namespace_meta()
-        meta.setdefault(namespace, {})["last_ingested"] = datetime.now().isoformat()
+        entry = meta.setdefault(namespace, {})
+        entry["last_ingested"] = datetime.now().isoformat()
+        if documents is not None:
+            existing = int(entry.get("documents", 0) or 0)
+            entry["documents"] = existing + int(documents)
+        if chunks is not None:
+            existing_chunks = int(entry.get("chunks", 0) or 0)
+            entry["chunks"] = existing_chunks + int(chunks)
         self._save_namespace_meta(meta)
 
     def _cache_fresh(self, entry: dict) -> bool:
@@ -242,10 +255,21 @@ class YoBrain:
         self._save_cache(cache)
         return cleaned
 
+    def _namespace_stats(self, namespace: str) -> Dict[str, Any]:
+        stats: Dict[str, Any] = {"records": None}
+        coll_name = self._collection_name(namespace)
+        try:
+            if coll_name in utility.list_collections():
+                collection = Collection(coll_name)
+                stats["records"] = int(collection.num_entities)
+        except Exception:
+            stats["records"] = None
+        return stats
+
     # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
-    def ingest(self, source: str, namespace: str = "default") -> None:
+    def ingest(self, source: str, namespace: str = "default") -> dict[str, Any] | None:
         path = Path(source)
         if not path.exists():
             raise FileNotFoundError(f"Source path not found: {source}")
@@ -271,7 +295,17 @@ class YoBrain:
         collection.insert([ids, payloads, sources, embeddings])
         collection.flush()
         print("✅ Ingestion complete.")
-        self._update_namespace_meta(namespace)
+        summary = {
+            "namespace": namespace,
+            "documents_ingested": len(documents),
+            "chunks_ingested": len(chunks),
+        }
+        self._update_namespace_meta(
+            namespace,
+            documents=len(documents),
+            chunks=len(chunks),
+        )
+        return summary
 
     def ask(self, question: str, namespace: str = "default", web: bool = False) -> str:
         if not question:
@@ -341,12 +375,18 @@ class YoBrain:
 
         return sorted_names
 
-    def namespace_activity(self) -> Dict[str, Dict[str, Optional[str]]]:
+    def namespace_activity(self) -> Dict[str, Dict[str, Any]]:
         meta = self._load_namespace_meta()
-        activity: Dict[str, Dict[str, Optional[str]]] = {}
+        activity: Dict[str, Dict[str, Any]] = {}
         for ns in self.ns_list(silent=True):
             entry = meta.get(ns, {})
-            activity[ns] = {"last_ingested": entry.get("last_ingested")}
+            stats: Dict[str, Any] = {
+                "last_ingested": entry.get("last_ingested"),
+                "documents": entry.get("documents"),
+                "chunks": entry.get("chunks"),
+            }
+            stats.update(self._namespace_stats(ns))
+            activity[ns] = stats
         return activity
 
     def ns_delete(self, namespace: str) -> None:
