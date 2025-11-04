@@ -53,6 +53,18 @@ sys.exit(1)
 PY
 }
 
+detect_python_module() {
+  local module="$1"
+  python3 - <<PY
+import importlib.util
+import sys
+
+if importlib.util.find_spec("$module"):
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # -----------------------------------------------------
 # Backend detection (can be overridden by environment)
 # -----------------------------------------------------
@@ -91,6 +103,28 @@ else
   fi
 fi
 OLLAMA_CLI_REASON=${YO_OLLAMA_CLI_REASON:-${OLLAMA_CLI_REASON:-"Install the Ollama CLI from https://ollama.com/download."}}
+
+CHARDET_READY=${YO_HAVE_CHARDET:-}
+CHARDET_REASON=${YO_CHARDET_REASON:-"Install chardet via 'pip install chardet'."}
+if [[ -z "$CHARDET_READY" ]]; then
+  if detect_python_module "chardet"; then
+    CHARDET_READY=1
+    CHARDET_REASON="chardet detected."
+  else
+    CHARDET_READY=0
+  fi
+fi
+
+OPENPYXL_READY=${YO_HAVE_OPENPYXL:-}
+OPENPYXL_REASON=${YO_OPENPYXL_REASON:-"Install openpyxl via 'pip install openpyxl'."}
+if [[ -z "$OPENPYXL_READY" ]]; then
+  if detect_python_module "openpyxl"; then
+    OPENPYXL_READY=1
+    OPENPYXL_REASON="openpyxl detected."
+  else
+    OPENPYXL_READY=0
+  fi
+fi
 
 run_step() {
   local label="$1"
@@ -143,8 +177,27 @@ run_step "List namespaces" "python3 -m yo.cli ns list" 1 1
 run_step "Ensure test namespace absent" "python3 -m yo.cli ns delete --ns test || echo 'Namespace test not found, skipping.'" 1 1
 
 # 3️⃣ Ingestion
+run_step "Ensure sample fixtures" "python3 scripts/generate_ingest_fixtures.py" 1 1
 run_step "Ingest docs into default" "python3 -m yo.cli add ./docs/ --ns default" 1 1
 run_step "Ingest docs into test" "python3 -m yo.cli add ./docs/ --ns test" 1 1
+
+if [[ "$CHARDET_READY" == "1" ]]; then
+  run_step "Ingest PDF fixture" "python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns ingest_pdf" 1 1
+else
+  skip "Ingest PDF fixture" "chardet unavailable (${CHARDET_REASON})"
+fi
+
+if [[ "$CHARDET_READY" == "1" && "$OPENPYXL_READY" == "1" ]]; then
+  run_step "Ingest XLSX fixture" "python3 -m yo.cli add fixtures/ingest/sample.xlsx --ns ingest_xlsx" 1 1
+else
+  reason=""
+  if [[ "$CHARDET_READY" != "1" ]]; then
+    reason="chardet unavailable (${CHARDET_REASON})"
+  elif [[ "$OPENPYXL_READY" != "1" ]]; then
+    reason="openpyxl unavailable (${OPENPYXL_REASON})"
+  fi
+  skip "Ingest XLSX fixture" "$reason"
+fi
 
 # 4️⃣ Summarization
 run_step "Summarize default namespace" "python3 -m yo.cli summarize --ns default" 1 1

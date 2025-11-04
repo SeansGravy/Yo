@@ -8,10 +8,27 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import pytest
-from fastapi.testclient import TestClient
+
+try:  # pragma: no cover - optional dependency for unit tests
+    from fastapi.testclient import TestClient
+except ImportError:  # pragma: no cover - skip when FastAPI is unavailable
+    pytest.skip("fastapi not installed", allow_module_level=True)
 
 from yo.backends import BackendStatus, BackendSummary
+from yo.brain import MissingDependencyError
 from yo import webui
+
+
+class FakeUpload:
+    def __init__(self, filename: str, payload: bytes) -> None:
+        self.filename = filename
+        self._payload = payload
+
+    async def read(self) -> bytes:
+        return self._payload
+
+    async def close(self) -> None:  # pragma: no cover - compatibility shim
+        return None
 
 
 class DummyBrain:
@@ -88,17 +105,6 @@ def test_ingest_endpoint_uses_brain(
 ) -> None:
     client, brain = dummy_client
 
-    class FakeUpload:
-        def __init__(self, filename: str, payload: bytes) -> None:
-            self.filename = filename
-            self._payload = payload
-
-        async def read(self) -> bytes:
-            return self._payload
-
-        async def close(self) -> None:  # pragma: no cover - compatibility shim
-            return None
-
     async def fake_extract(request):
         return "ideas", [FakeUpload("note.txt", b"hello")]
 
@@ -110,6 +116,29 @@ def test_ingest_endpoint_uses_brain(
     payload = response.json()
     assert payload["ingest"]["namespace"] == "ideas"
     assert brain.calls and brain.calls[0][1] == "ideas"
+
+
+def test_ingest_endpoint_returns_dependency_error(
+    dummy_client: tuple[TestClient, DummyBrain],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, brain = dummy_client
+
+    async def fake_extract(request):
+        return "default", [FakeUpload("report.pdf", b"pdf-bytes")]
+
+    monkeypatch.setattr(webui, "_extract_uploads", fake_extract)
+
+    def failing_ingest(path: str, namespace: str = "default") -> None:
+        raise MissingDependencyError("Install openpyxl")
+
+    monkeypatch.setattr(brain, "ingest", failing_ingest)
+
+    response = client.post("/api/ingest")
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert "openpyxl" in (payload.get("detail") or "")
 
 
 def test_ui_route_serves_dashboard(dummy_client: tuple[TestClient, DummyBrain]) -> None:

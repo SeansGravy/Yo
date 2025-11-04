@@ -25,14 +25,17 @@ python3 -m yo.cli <command> [options]
 ### Ingest files
 
 ```bash
+python3 scripts/generate_ingest_fixtures.py  # ensure sample PDF/XLSX fixtures exist
 python3 -m yo.cli add ./docs/ --ns default
-python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
-python3 -m yo.cli add fixtures/ingest/example.py --ns code --loader code
+python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research
+python3 -m yo.cli add fixtures/ingest/sample.xlsx --ns finance
+python3 -m yo.cli add fixtures/ingest/example.py --ns code
 ```
 
-* Recursively ingests supported documents (text, Markdown, PDF, and source files) and stores the embeddings in `yo_<namespace>`.
-* `--loader` lets you override the detection logic (`auto`, `text`, `markdown`, `pdf`, `code`). Auto-mode mixes formats safely.
-* OCR is attempted automatically for scanned PDFs when `unstructured[local-inference]` and `pytesseract` are installed.
+* Recursively ingests supported documents (text, Markdown, PDF, XLSX, and common source files) into `yo_<namespace>`.
+* PDF ingestion requires `unstructured[local-inference]`, `pdfminer.six`, and `chardet>=5.2`. Install `pytesseract` plus the Tesseract binary for OCR of scanned pages.
+* XLSX ingestion requires `openpyxl` alongside `chardet>=5.2`.
+* Yo now surfaces descriptive errors when dependencies are missing or a file type is unsupported so the CLI and Lite UI can continue gracefully.
 
 ### Ask a question
 

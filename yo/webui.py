@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
 from yo.backends import BackendStatus, detect_backends
-from yo.brain import YoBrain
+from yo.brain import IngestionError, MissingDependencyError, YoBrain
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -217,7 +217,9 @@ async def api_ingest(request: Request) -> JSONResponse:
 
         try:
             result = brain.ingest(source, namespace=namespace)
-        except ValueError as exc:
+        except MissingDependencyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except IngestionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

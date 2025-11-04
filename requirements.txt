@@ -17,6 +17,7 @@ pymilvus
 milvus-lite>=2.4.4
 ollama
 python-multipart>=0.0.9
+chardet>=5.2
 unstructured[local-inference]
 pytesseract
 packaging

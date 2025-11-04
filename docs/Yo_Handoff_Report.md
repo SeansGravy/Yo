@@ -86,6 +86,9 @@ python3 -m yo.cli ns list
 # Ingest a folder of mixed-format files into namespace 'default'
 python3 -m yo.cli add ./docs/ --ns default
 
+# Generate sample PDF/XLSX fixtures for demos
+python3 scripts/generate_ingest_fixtures.py
+
 # Ingest a scanned PDF with OCR fallback
 python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
 
@@ -150,7 +153,7 @@ python3 -m yo.cli verify
 * `yo/cli.py`: CLI routing for `add`, `ask`, `summarize`, `ns`, `cache`, `compact`, `verify`.
 * `yo/brain.py`: All core logic—Milvus safe init/recovery, ingestion (multi-format + OCR), retrieval, summarization, cache, and compaction (auto + manual).
 * `yo_full_test.sh`: End-to-end test driver (creates logs).
-* `fixtures/ingest/`: Sample Markdown/PDF/code fixtures used in regression tests.
+* `fixtures/ingest/`: Sample Markdown/PDF/code fixtures (generate via `python3 scripts/generate_ingest_fixtures.py`).
 * `data/`: Milvus Lite DB + web cache JSON (local artifacts; ignore in git).
 
 ---
@@ -176,7 +179,7 @@ Milvus Lite remains the recommended default for local deployments, balancing por
 ### One-line “ready” test for a fresh shell
 
 ```bash
-source .venv/bin/activate && python3 -m yo.cli ns list && python3 -m yo.cli add ./docs/ --ns default && python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf && python3 -m yo.cli summarize --ns default
+source .venv/bin/activate && python3 -m yo.cli ns list && python3 -m yo.cli add ./docs/ --ns default && python3 scripts/generate_ingest_fixtures.py && python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf && python3 -m yo.cli summarize --ns default
 ```
 
 ---

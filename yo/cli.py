@@ -17,7 +17,7 @@ Status = Literal["ok", "warn", "fail"]
 from packaging.version import InvalidVersion, Version
 
 from yo.backends import detect_backends
-from yo.brain import YoBrain
+from yo.brain import IngestionError, MissingDependencyError, YoBrain
 
 
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
@@ -296,7 +296,18 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
 
 def _handle_add(args: argparse.Namespace, brain: YoBrain | None) -> None:
     assert brain is not None
-    brain.ingest(args.path, namespace=args.ns)
+    try:
+        brain.ingest(args.path, namespace=args.ns)
+    except FileNotFoundError as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1) from exc
+    except MissingDependencyError as exc:
+        print(f"❌ {exc}")
+        print("   Install the missing dependency and retry.")
+        raise SystemExit(1) from exc
+    except IngestionError as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1) from exc
 
 
 def _handle_ask(args: argparse.Namespace, brain: YoBrain | None) -> None:
