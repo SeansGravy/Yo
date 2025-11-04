@@ -17,7 +17,7 @@ cd Yo
 
 ### 1.2 Prerequisites
 
-* Python 3.10+
+* Python 3.9+ (3.10+ recommended)
 * [Ollama](https://ollama.com/download) installed and running locally
 * macOS or Linux shell (Windows WSL works too)
 
@@ -33,6 +33,8 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+> The requirements file installs `langchain-ollama>=0.1.0`, `milvus-lite>=2.4.4`, and pins `setuptools>=81` so the Milvus Lite backend stays compatible out of the box.
 
 > **OCR note:** For scanned PDFs, install the Tesseract binary (`brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu) so `pytesseract` can extract text during ingestion.
 
@@ -53,13 +55,18 @@ Yo/
 │   ├── milvus_lite.db     # main database (auto-created)
 │   ├── recoveries/        # locked DB backups (auto-rotated)
 │   └── web_cache.json     # cached DuckDuckGo snippets (24h TTL)
-├── docs/                  # drop your `.txt` source files here (optional)
-├── fixtures/ingest/       # sample Markdown, PDF, and code fixtures used by tests
+├── docs/
+│   ├── README.md          # developer overview and architecture
+│   ├── USER_GUIDE.md      # this guide
+│   ├── ROADMAP.md         # upcoming phases and milestones
+│   └── Yo_Handoff_Report.md   # current project context & release history
+├── fixtures/ingest/       # sample Markdown/PDF/code fixtures (run scripts/generate_ingest_fixtures.py)
 ├── yo/                    # Python package
+│   ├── __init__.py        # warning filters + package metadata
 │   ├── brain.py           # YoBrain orchestration logic
-│   └── cli.py             # command-line interface
+│   ├── cli.py             # command-line interface
+│   └── webui.py           # FastAPI stub for the Lite UI
 ├── yo_full_test.sh        # optional regression script (called by `verify`)
-└── Yo_Handoff_Report.md   # current project context & roadmap
 ```
 
 ---
@@ -89,18 +96,21 @@ python3 -m yo.cli --help
 ### 4.1 `add` — Ingest local files
 
 ```bash
+python3 scripts/generate_ingest_fixtures.py  # generate sample PDF/XLSX fixtures
 python3 -m yo.cli add ./docs/ --ns research
-python3 -m yo.cli add fixtures/ingest/roadmap_note.md --ns briefs --loader markdown
-python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
-python3 -m yo.cli add fixtures/ingest/example.py --ns code --loader code
+python3 -m yo.cli add fixtures/ingest/roadmap_note.md --ns briefs
+python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research
+python3 -m yo.cli add fixtures/ingest/sample.xlsx --ns finance
+python3 -m yo.cli add fixtures/ingest/example.py --ns code
 ```
 
 * Accepts a path to a directory or a single file.
-* Supports auto-detection across text, Markdown, PDF, and common source-code extensions.
-* Use `--loader` to force a specific parser (`auto`, `text`, `markdown`, `pdf`, `code`).
+* Supports auto-detection across text, Markdown, PDF, XLSX, and common source-code extensions.
 * Creates the namespace (Milvus collection) if it does not exist.
 * Emits the number of chunks created and confirms when ingestion is complete.
-* When `unstructured[local-inference]` and `pytesseract` are available, scanned PDFs are OCR'd automatically.
+* PDF ingestion requires `unstructured[local-inference]`, `pdfminer.six`, and `chardet>=5.2`. Install `pytesseract` plus the Tesseract binary for OCR of scanned pages.
+* XLSX ingestion requires `openpyxl` alongside `chardet>=5.2`.
+* When dependencies are missing or a format is unsupported, the CLI and Lite UI now return clear error messages instead of aborting the entire run.
 
 ### 4.2 `ask` — Query the knowledge base
 
@@ -158,8 +168,9 @@ python3 -m yo.cli compact
 python3 -m yo.cli doctor
 ```
 
-* Confirms Python version, Ollama availability, required Python packages, and minimum `setuptools` version.
-* Verifies that `yo_full_test.sh` and the `data/` directory are present.
+* Prints ✅/⚠️/❌ statuses for Python, `langchain`, `langchain-ollama>=0.1.0`, `setuptools>=81`, and `milvus-lite>=2.4.4`.
+* Verifies that Ollama, the Ollama Python bindings, `pymilvus[milvus_lite]`, `yo_full_test.sh`, and the `data/` directory are present.
+* Reports whether the Milvus Lite runtime can be imported so vector-store operations don’t fail later.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
 ### 4.8 `verify` — Run the regression suite
@@ -170,6 +181,7 @@ python3 -m yo.cli verify
 
 * Executes `yo_full_test.sh` (if the script is present).
 * Logs the output to `yo_test_results_<timestamp>.log`.
+* Automatically skips ingestion and Q&A checks when Milvus Lite or the Ollama backend is missing, marking those sections with ⚠️ entries instead of failing the suite.
 
 ---
 
@@ -179,8 +191,11 @@ python3 -m yo.cli verify
 # 1. Ingest documentation into the default namespace
 python3 -m yo.cli add ./docs/ --ns default
 
-# 1b. Add a scanned PDF with explicit OCR loader
-python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
+# 1b. Add a scanned PDF once OCR dependencies are installed
+python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research
+
+# 1c. Add an XLSX workbook (requires openpyxl + chardet)
+python3 -m yo.cli add fixtures/ingest/sample.xlsx --ns finance
 
 # 2. Ask purely from memory
 python3 -m yo.cli ask "Summarize the project goals" --ns default
@@ -197,26 +212,47 @@ python3 -m yo.cli compact
 
 ---
 
-## 6. Troubleshooting & Tips
+## 6. Lite Web UI Preview
+
+The Lite UI now ships with a FastAPI app in `yo/webui.py`. Launch it with Uvicorn to open the dashboard:
+
+```bash
+uvicorn yo.webui:app --reload
+```
+
+Open [http://localhost:8000/ui](http://localhost:8000/ui) to:
+
+* Review Milvus Lite and Ollama health (including detected versions) at a glance.
+* Inspect each namespace’s last-ingested timestamp along with cumulative document and chunk counts.
+* Upload one or more files directly into any namespace—select the target namespace, choose your files, and the UI will call the same ingestion pipeline used by the CLI. The uploader is disabled automatically when Milvus Lite or Ollama are missing, and the warning panel explains what needs to be installed.
+  * File uploads rely on the optional `python-multipart` package (bundled in `requirements.txt`) and the Jinja2 templating engine. If you install dependencies manually, add them via `pip install python-multipart Jinja2` so the browser uploader works.
+
+Need machine-readable data? Hit [http://localhost:8000/api/status](http://localhost:8000/api/status) for JSON containing backend readiness, namespace metrics, and the ingestion enablement flag the UI relies on.
+
+---
+
+## 7. Troubleshooting & Tips
 
 | Issue | Likely Cause | Fix |
 | ----- | ------------ | --- |
 | `Source path not found` | Typo in the ingest path | Double-check the file or folder path. |
-| "No ingestible documents" | Directory lacks supported formats | Add `.txt`, `.md`, `.pdf`, or common source files, or force a parser with `--loader`. |
+| "No ingestible documents" | Directory lacks supported formats | Add `.txt`, `.md`, `.pdf`, `.xlsx`, or common source files. |
+| `Install chardet` / `Install openpyxl` errors | Optional parser dependency missing | Install the suggested package (`pip install chardet` or `pip install openpyxl`) and rerun ingestion. |
 | PDF ingested but blank | Missing OCR dependencies | Install `unstructured[local-inference]` (via `pip install -r requirements.txt`) and system Tesseract (`brew install tesseract` or distro equivalent). |
 | Milvus Lite lock message | Another process was using the DB | Yo automatically moves the locked DB into `data/recoveries/` and recreates a clean one. |
 | `ask` returns no memory results | Namespace missing or empty | Verify ingestion ran successfully and that you used the correct `--ns`. |
 | Web lookup failed | Offline or DuckDuckGo blocked | Retry without `--web`, or investigate network connectivity. |
 | CLI shows dependency errors | Missing local setup steps | Run `python3 -m yo.cli doctor` to see which requirement is missing. |
+| `yo.cli verify` reports skipped steps | Milvus Lite or the Ollama backend is not installed | Install `pymilvus[milvus_lite]` plus the Ollama CLI and Python bindings (`pip install ollama langchain-ollama`) to run the full suite. |
 | `git pull` would overwrite files | You have local edits not yet saved | Run `git status` to inspect, then either commit (`git add` → `git commit`) or stash (`git stash --include-untracked`) before pulling again. |
 
 **Tip:** Keep `yo_full_test.sh` up-to-date with your end-to-end checks. `yo.cli verify` depends on it.
 
 ---
 
-## 7. Roadmap Snapshot
+## 8. Roadmap Snapshot
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
+See [`ROADMAP.md`](ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
 
 ---
 

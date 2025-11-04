@@ -86,6 +86,9 @@ python3 -m yo.cli ns list
 # Ingest a folder of mixed-format files into namespace 'default'
 python3 -m yo.cli add ./docs/ --ns default
 
+# Generate sample PDF/XLSX fixtures for demos
+python3 scripts/generate_ingest_fixtures.py
+
 # Ingest a scanned PDF with OCR fallback
 python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
 
@@ -117,27 +120,31 @@ python3 -m yo.cli verify
 
 ## 6) Release Status We Reached
 
-* **`v0.2.5`**: Tagged the stabilized foundation (text ingestion, namespace management, cached web, manual compact).
-* **`v0.3.0`** *(current)*: Markdown/PDF/code loaders with OCR fallback, `--loader` override, langchain-ollama import refresh, auto-compaction threshold, warning-free doctor checks, expanded regression suite.
+* **`v0.2.5`** – Stabilized the ingestion, namespace management, cached web retrieval, and manual compaction flows.
+* **`v0.3.0`** – Added Markdown/PDF/code loaders with OCR fallback, the `--loader` override, refreshed embedding imports, auto-compaction thresholds, and warning-free doctor checks.
+* **`v0.3.1`** – Delivered graceful degradation when Milvus Lite or the Ollama CLI are missing so verification scripts skip unavailable backends without failing.
+* **`v0.4.0`** – Launched the FastAPI Lite UI with backend health indicators, namespace dashboards, and browser-based ingestion uploads.
+* **`v0.4.2` (current)** – Realigned documentation under `/docs`, expanded the top-level README, and reaffirmed Milvus Lite as the supported local backend.
 
 ---
 
 ## 7) Next Work Items (clean, actionable)
 
-**High-value:** (See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the expanded multi-phase plan.)
+**High-value:** (See [`ROADMAP.md`](ROADMAP.md) for the expanded multi-phase plan.)
 
-1. **Ingestion telemetry & rebuild tools**
+1. **Lite UI iterations**
 
-   * Surface chunk/doc counts per ingest and capture simple metrics for future dashboards.
-   * Add a re-embed command to rebuild namespaces when embedding models change.
+   * Add live ingestion progress, richer filtering, and namespace management from the browser.
+   * Harden upload handling with resumable transfers and background jobs.
 
-2. **Multi-namespace hybrid retrieval**
+2. **Hybrid retrieval improvements**
 
-   * Search across multiple namespaces (`default`, `research`, etc.) and merge results by similarity score.
+   * Support cross-namespace search and ranking, paving the way for blended dashboards.
+   * Explore lightweight rerankers to boost answer quality before synthesis.
 
 **Quality-of-life:**
-3. **Improve answer content** by adding a second pass synthesis step (ReAct-style) on the retrieved chunks + optional web snippets.
-4. **Lite UI spike** for Phase 1.5 (Textual or FastAPI shell) once the RAG foundation settles.
+3. **Advanced automation** – Build re-embedding and maintenance commands so schema repairs and model swaps stay simple.
+4. **Extended observability** – Capture ingest metrics, chunk counts, and backend health snapshots for long-running deployments.
 
 ---
 
@@ -146,7 +153,7 @@ python3 -m yo.cli verify
 * `yo/cli.py`: CLI routing for `add`, `ask`, `summarize`, `ns`, `cache`, `compact`, `verify`.
 * `yo/brain.py`: All core logic—Milvus safe init/recovery, ingestion (multi-format + OCR), retrieval, summarization, cache, and compaction (auto + manual).
 * `yo_full_test.sh`: End-to-end test driver (creates logs).
-* `fixtures/ingest/`: Sample Markdown/PDF/code fixtures used in regression tests.
+* `fixtures/ingest/`: Sample Markdown/PDF/code fixtures (generate via `python3 scripts/generate_ingest_fixtures.py`).
 * `data/`: Milvus Lite DB + web cache JSON (local artifacts; ignore in git).
 
 ---
@@ -158,6 +165,12 @@ python3 -m yo.cli verify
 * ✅ `python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf` OCRs PDFs when dependencies exist
 * ✅ `python3 -m yo.cli ask "What is LangChain?" --ns default` returns coherent text
 * ✅ `python3 -m yo.cli ask "..." --web` shows “[Web Results]” in context
+
+---
+
+## 10) Future Considerations
+
+Milvus Lite remains the recommended default for local deployments, balancing portability with zero external services. For larger teams that need concurrency, horizontal scaling, or managed backups, plan an optional migration to a dedicated Milvus standalone or cloud instance. The ingestion and retrieval abstractions in `yo/brain.py` already isolate vector-store calls, so swapping the backend can stay localized to the backend initialization and configuration routines.
 * ✅ `python3 -m yo.cli compact` prints a **VACUUM** size delta
 * ✅ `python3 -m yo.cli verify` logs and returns “Verification complete”
 
@@ -166,7 +179,7 @@ python3 -m yo.cli verify
 ### One-line “ready” test for a fresh shell
 
 ```bash
-source .venv/bin/activate && python3 -m yo.cli ns list && python3 -m yo.cli add ./docs/ --ns default && python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf && python3 -m yo.cli summarize --ns default
+source .venv/bin/activate && python3 -m yo.cli ns list && python3 -m yo.cli add ./docs/ --ns default && python3 scripts/generate_ingest_fixtures.py && python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf && python3 -m yo.cli summarize --ns default
 ```
 
 ---

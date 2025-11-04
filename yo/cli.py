@@ -7,11 +7,17 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from importlib import metadata as importlib_metadata
 from importlib import util as import_util
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional, Sequence
 
-from yo.brain import YoBrain
+Status = Literal["ok", "warn", "fail"]
+
+from packaging.version import InvalidVersion, Version
+
+from yo.backends import detect_backends
+from yo.brain import IngestionError, MissingDependencyError, YoBrain
 
 
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
@@ -25,11 +31,39 @@ def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
         print("⚠️  yo_full_test.sh not found. Please recreate it first.")
         raise SystemExit(1)
 
+    backends = detect_backends()
+
+    env = dict(os.environ)
+
+    env["YO_HAVE_MILVUS"] = "1" if backends.milvus.available else "0"
+    env["YO_MILVUS_REASON"] = backends.milvus.message
+    env["YO_SKIP_MILVUS"] = "0" if backends.milvus.available else "1"
+    if not backends.milvus.available:
+        print(
+            "⚠️  Milvus Lite not detected — vector-store operations disabled. "
+            f"{backends.milvus.message}"
+        )
+
+    env["YO_HAVE_OLLAMA_PY"] = "1" if backends.ollama_python.available else "0"
+    env["YO_OLLAMA_PY_REASON"] = backends.ollama_python.message
+
+    env["YO_HAVE_OLLAMA_CLI"] = "1" if backends.ollama_cli.available else "0"
+    env["YO_OLLAMA_CLI_REASON"] = backends.ollama_cli.message
+
+    ollama_ready = backends.ollama_python.available and backends.ollama_cli.available
+    env["YO_SKIP_OLLAMA"] = "0" if ollama_ready else "1"
+
+    if not ollama_ready:
+        print("⚠️  Ollama backend incomplete — generation tests will be skipped.")
+        if not backends.ollama_python.available:
+            print(f"   • {backends.ollama_python.message}")
+        if not backends.ollama_cli.available:
+            print(f"   • {backends.ollama_cli.message}")
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     logfile = Path.cwd() / f"yo_test_results_{ts}.log"
     print(f"🧠 Running full Yo test suite… (logging to {logfile.name})")
 
-    env = dict(os.environ)
     env["YO_LOGFILE"] = str(logfile)
 
     result = subprocess.run(
@@ -55,36 +89,49 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
     import platform
     import shutil
 
-    def _report(title: str, ok: bool, detail: str = "") -> bool:
-        icon = "✅" if ok else "❌"
+    def _status_icon(status: Status) -> str:
+        return {"ok": "✅", "warn": "⚠️", "fail": "❌"}[status]
+
+    def _report(title: str, status: Status, detail: str = "") -> Status:
+        icon = _status_icon(status)
         print(f"{icon} {title}")
         if detail:
             for line in detail.strip().splitlines():
                 print(f"   {line}")
-        return ok
+        return status
 
-    def _run_check(title: str, check: Callable[[], tuple[bool, str]]) -> bool:
+    def _run_check(title: str, check: Callable[[], tuple[Status, str]]) -> Status:
         try:
-            ok, detail = check()
+            status, detail = check()
         except Exception as exc:  # pragma: no cover - defensive guard
-            ok, detail = False, str(exc)
-        return _report(title, ok, detail)
+            status, detail = "fail", str(exc)
+        return _report(title, status, detail)
+
+    def _summarize(statuses: Sequence[Status]) -> Status:
+        if any(state == "fail" for state in statuses):
+            return "fail"
+        if any(state == "warn" for state in statuses):
+            return "warn"
+        return "ok"
 
     print("🩺 Yo Doctor — checking your setup\n")
 
-    all_ok = True
+    statuses: list[Status] = []
 
-    def _check_python() -> tuple[bool, str]:
+    def _check_python() -> tuple[Status, str]:
         version = platform.python_version()
-        ok = sys.version_info >= (3, 9)
-        detail = f"Detected Python {version}." + ("" if ok else " Please use Python 3.9 or newer.")
-        return ok, detail
+        detail = f"Detected Python {version}."
+        if sys.version_info < (3, 9):
+            return "fail", detail + " Please use Python 3.9 or newer."
+        if sys.version_info < (3, 10):
+            return "warn", detail + " Consider upgrading to Python 3.10+ for best results."
+        return "ok", detail
 
-    def _check_executable(name: str, display: str, extra_hint: str = "") -> tuple[bool, str]:
+    def _check_executable(name: str, display: str, extra_hint: str = "") -> tuple[Status, str]:
         path = shutil.which(name)
         if not path:
             hint = extra_hint or f"Install {display} and ensure it is on your PATH."
-            return False, hint
+            return "fail", hint
         try:
             result = subprocess.run(
                 [name, "--version"],
@@ -95,69 +142,172 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
                 timeout=5,
             )
         except Exception as exc:  # pragma: no cover - safety net
-            return False, f"Could not execute {display}: {exc}"
+            return "fail", f"Could not execute {display}: {exc}"
 
         if result.returncode != 0:
             message = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
-            return False, message
+            return "fail", message
 
         version_info = result.stdout.strip() or result.stderr.strip() or "version check succeeded"
-        return True, f"Found at {path} ({version_info})."
+        return "ok", f"Found at {path} ({version_info})."
 
-    def _check_module(module: str, hint: str) -> tuple[bool, str]:
+    def _check_module(module: str, hint: str) -> tuple[Status, str]:
         if import_util.find_spec(module) is None:
-            return False, hint
-        return True, f"Python module '{module}' is available."
+            return "fail", hint
+        return "ok", f"Python module '{module}' is available."
 
-    all_ok &= _run_check("Python version", _check_python)
-    all_ok &= _run_check("Ollama available", lambda: _check_executable("ollama", "Ollama"))
-    all_ok &= _run_check(
-        "pymilvus installed",
-        lambda: _check_module("pymilvus", "Install with: pip install pymilvus[milvus_lite]"),
+    def _check_distribution(
+        dist: str,
+        hint: str,
+        min_version: str | None = None,
+    ) -> tuple[Status, str]:
+        try:
+            version = importlib_metadata.version(dist)
+        except importlib_metadata.PackageNotFoundError:
+            return "fail", hint
+
+        detail = f"{dist} {version} detected."
+        if not min_version:
+            return "ok", detail
+
+        try:
+            if Version(version) < Version(min_version):
+                return (
+                    "fail",
+                    f"{dist} {version} found. Upgrade to {min_version}+ via `pip install -U {dist}`.",
+                )
+        except InvalidVersion:
+            return "warn", detail + " (unable to compare versions)"
+        return "ok", detail
+
+    statuses.append(_run_check("Python version", _check_python))
+    dependency_checks: Sequence[tuple[str, str, str, str | None]] = (
+        (
+            "langchain version",
+            "langchain",
+            "Install with: pip install -r requirements.txt",
+            None,
+        ),
+        (
+            "langchain-ollama>=0.1.0",
+            "langchain-ollama",
+            "Install with: pip install 'langchain-ollama>=0.1.0'",
+            "0.1.0",
+        ),
+        (
+            "setuptools>=81",
+            "setuptools",
+            "Install with: pip install -U 'setuptools>=81'",
+            "81",
+        ),
+        (
+            "milvus-lite>=2.4.4",
+            "milvus-lite",
+            "Install with: pip install 'milvus-lite>=2.4.4'",
+            "2.4.4",
+        ),
     )
-    all_ok &= _run_check(
-        "milvus_lite installed",
-        lambda: _check_module("milvus_lite", "Install with: pip install pymilvus[milvus_lite]"),
+    for title, dist, hint, minimum in dependency_checks:
+        statuses.append(
+            _run_check(
+                title,
+                lambda dist=dist, hint=hint, minimum=minimum: _check_distribution(
+                    dist,
+                    hint,
+                    min_version=minimum,
+                ),
+            )
+        )
+    statuses.append(
+        _run_check(
+            "Ollama CLI version",
+            lambda: _check_executable(
+                "ollama",
+                "Ollama",
+                "Install the Ollama CLI from https://ollama.com/download and ensure it is on your PATH.",
+            ),
+        )
     )
-    all_ok &= _run_check(
-        "langchain installed",
-        lambda: _check_module("langchain", "Install with: pip install -r requirements.txt"),
+    statuses.append(
+        _run_check(
+            "pymilvus installed",
+            lambda: _check_module("pymilvus", "Install with: pip install pymilvus[milvus_lite]"),
+        )
+    )
+
+    backends = detect_backends()
+    statuses.append(
+        _report(
+            "Milvus Lite runtime",
+            "ok" if backends.milvus.available else "fail",
+            backends.milvus.message,
+        )
+    )
+    statuses.append(
+        _report(
+            "Ollama Python bindings",
+            "ok" if backends.ollama_python.available else "fail",
+            backends.ollama_python.message,
+        )
+    )
+    statuses.append(
+        _report(
+            "Ollama CLI detected",
+            "ok" if backends.ollama_cli.available else "fail",
+            backends.ollama_cli.message,
+        )
     )
 
     data_dir = Path("data")
-    all_ok &= _report(
-        "Data directory present",
-        data_dir.exists(),
-        "Run `mkdir data` in the project root." if not data_dir.exists() else f"Using {data_dir.resolve()}",
+    statuses.append(
+        _report(
+            "Data directory present",
+            "ok" if data_dir.exists() else "fail",
+            "Run `mkdir data` in the project root." if not data_dir.exists() else f"Using {data_dir.resolve()}",
+        )
     )
 
     test_script = Path("yo_full_test.sh")
-    all_ok &= _report(
-        "Regression script available",
-        test_script.exists(),
-        "Restore yo_full_test.sh from the repo root." if not test_script.exists() else "Found in project root.",
+    statuses.append(
+        _report(
+            "Regression script available",
+            "ok" if test_script.exists() else "fail",
+            "Restore yo_full_test.sh from the repo root." if not test_script.exists() else "Found in project root.",
+        )
     )
 
-    try:
-        brain = YoBrain()
-    except Exception as exc:  # pragma: no cover - best effort diagnosis
-        all_ok &= _report(
-            "YoBrain initialization",
-            False,
-            f"{exc}\nInstall missing dependencies or check Milvus Lite permissions.",
-        )
-    else:
-        all_ok &= _report("YoBrain initialization", True, "Milvus Lite connection established.")
+    def _check_brain() -> tuple[Status, str]:
+        try:
+            YoBrain()
+        except Exception as exc:  # pragma: no cover - best effort diagnosis
+            return "fail", f"{exc}\nInstall missing dependencies or check Milvus Lite permissions."
+        return "ok", "Milvus Lite connection established."
 
-    if all_ok:
+    statuses.append(_run_check("YoBrain initialization", _check_brain))
+
+    summary = _summarize(statuses)
+    if summary == "ok":
         print("\n✅ Everything looks ready! Try `python3 -m yo.cli verify` next.")
+    elif summary == "warn":
+        print("\n⚠️ Resolve the warnings above before continuing.")
     else:
         print("\n❌ Fix the items marked above, then rerun `python3 -m yo.cli doctor`.")
 
 
 def _handle_add(args: argparse.Namespace, brain: YoBrain | None) -> None:
     assert brain is not None
-    brain.ingest(args.path, namespace=args.ns)
+    try:
+        brain.ingest(args.path, namespace=args.ns)
+    except FileNotFoundError as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1) from exc
+    except MissingDependencyError as exc:
+        print(f"❌ {exc}")
+        print("   Install the missing dependency and retry.")
+        raise SystemExit(1) from exc
+    except IngestionError as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1) from exc
 
 
 def _handle_ask(args: argparse.Namespace, brain: YoBrain | None) -> None:
