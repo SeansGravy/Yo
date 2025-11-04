@@ -10,9 +10,10 @@ langchain
 langchain-core
 langchain-community
 langchain-text-splitters
-langchain-ollama
+langchain-ollama>=0.1.0
 langchain-milvus
 pymilvus
+milvus-lite>=2.4.4
 ollama
 unstructured[local-inference]
 pytesseract
