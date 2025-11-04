@@ -12,7 +12,7 @@
 git clone https://github.com/SeansGravy/Yo.git
 cd Yo
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt  # installs langchain-ollama>=0.1.0, milvus-lite>=2.4.4, setuptools>=81
 ollama pull llama3             # generation model
 ollama pull nomic-embed-text   # embedding model
 # Optional (macOS/Homebrew): `brew install tesseract` to enable OCR for scanned PDFs.
@@ -94,7 +94,7 @@ Runs a SQLite `VACUUM` to reclaim space from `data/milvus_lite.db`. Yo also auto
 python3 -m yo.cli doctor
 ```
 
-Checks for Python/Ollama availability, required Python packages, and Milvus Lite connectivity. Handy when something fails after pulling updates.
+Prints ✅/⚠️/❌ statuses for Python, langchain, langchain-ollama>=0.1.0, setuptools>=81, milvus-lite>=2.4.4, and verifies Ollama plus Milvus Lite connectivity.
 
 ### Run the full regression test
 
@@ -125,7 +125,20 @@ Executes `yo_full_test.sh` (if present) and writes a timestamped log next to the
 * **Missing models** – Verify `ollama pull llama3` and `ollama pull nomic-embed-text` have completed successfully.
 * **`git pull` refuses to update** – Commit or stash your local changes first (`git status` → `git add ...` → `git commit` or `git stash --include-untracked`), then rerun `git pull origin main`.
 * **OCR fallback missing text** – Install Tesseract (`brew install tesseract` on macOS) so `pytesseract` can read scanned PDFs.
-* **Still stuck?** – Run `python3 -m yo.cli doctor` to diagnose Python/Ollama/dependency issues automatically, including the minimum `setuptools` version.
+* **`pkg_resources` warnings** – Yo switched to `importlib.metadata` for version checks and locally filters Milvus Lite’s deprecated `pkg_resources` warning; avoid adding new `pkg_resources` imports when contributing.
+* **Still stuck?** – Run `python3 -m yo.cli doctor` to diagnose Python/Ollama/dependency issues automatically, including `langchain-ollama` availability and the minimum `setuptools` version.
+
+---
+
+## 🔭 Lite UI Preview
+
+Phase 1.5 will introduce a lightweight web interface. A FastAPI stub now lives in `yo/webui.py` so you can experiment locally:
+
+```bash
+uvicorn yo.webui:app --reload
+```
+
+Visit [http://localhost:8000/ui](http://localhost:8000/ui) to see a simple status page that reuses YoBrain for namespace listings. The view will grow to expose ingestion progress and controls as the Lite UI milestone lands.
 
 ---
 

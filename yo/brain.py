@@ -17,7 +17,7 @@ from typing import List, Tuple
 
 import requests
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ollama import Client
 from pymilvus import (
