@@ -34,6 +34,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> **OCR note:** For scanned PDFs, install the Tesseract binary (`brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu) so `pytesseract` can extract text during ingestion.
+
 ### 1.5 Pull required Ollama models
 
 ```bash
@@ -52,6 +54,7 @@ Yo/
 │   ├── recoveries/        # locked DB backups (auto-rotated)
 │   └── web_cache.json     # cached DuckDuckGo snippets (24h TTL)
 ├── docs/                  # drop your `.txt` source files here (optional)
+├── fixtures/ingest/       # sample Markdown, PDF, and code fixtures used by tests
 ├── yo/                    # Python package
 │   ├── brain.py           # YoBrain orchestration logic
 │   └── cli.py             # command-line interface
@@ -87,12 +90,17 @@ python3 -m yo.cli --help
 
 ```bash
 python3 -m yo.cli add ./docs/ --ns research
+python3 -m yo.cli add fixtures/ingest/roadmap_note.md --ns briefs --loader markdown
+python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
+python3 -m yo.cli add fixtures/ingest/example.py --ns code --loader code
 ```
 
 * Accepts a path to a directory or a single file.
-* Recursively ingests `.txt` files using `langchain` loaders with encoding autodetect.
+* Supports auto-detection across text, Markdown, PDF, and common source-code extensions.
+* Use `--loader` to force a specific parser (`auto`, `text`, `markdown`, `pdf`, `code`).
 * Creates the namespace (Milvus collection) if it does not exist.
 * Emits the number of chunks created and confirms when ingestion is complete.
+* When `unstructured[local-inference]` and `pytesseract` are available, scanned PDFs are OCR'd automatically.
 
 ### 4.2 `ask` — Query the knowledge base
 
@@ -142,6 +150,7 @@ python3 -m yo.cli compact
 
 * Runs SQLite `VACUUM` on `data/milvus_lite.db` to reclaim space.
 * Prints the size delta (MiB before/after).
+* Yo automatically triggers compaction when the database grows beyond ~100 MiB after ingestion.
 
 ### 4.7 `doctor` — Diagnose local setup issues
 
@@ -149,7 +158,7 @@ python3 -m yo.cli compact
 python3 -m yo.cli doctor
 ```
 
-* Confirms Python version, Ollama availability, and required Python packages.
+* Confirms Python version, Ollama availability, required Python packages, and minimum `setuptools` version.
 * Verifies that `yo_full_test.sh` and the `data/` directory are present.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
@@ -169,6 +178,9 @@ python3 -m yo.cli verify
 ```bash
 # 1. Ingest documentation into the default namespace
 python3 -m yo.cli add ./docs/ --ns default
+
+# 1b. Add a scanned PDF with explicit OCR loader
+python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
 
 # 2. Ask purely from memory
 python3 -m yo.cli ask "Summarize the project goals" --ns default
@@ -190,7 +202,8 @@ python3 -m yo.cli compact
 | Issue | Likely Cause | Fix |
 | ----- | ------------ | --- |
 | `Source path not found` | Typo in the ingest path | Double-check the file or folder path. |
-| "No ingestible documents" | Directory lacks `.txt` files | Convert your sources to `.txt`. Markdown/PDF support is on the roadmap. |
+| "No ingestible documents" | Directory lacks supported formats | Add `.txt`, `.md`, `.pdf`, or common source files, or force a parser with `--loader`. |
+| PDF ingested but blank | Missing OCR dependencies | Install `unstructured[local-inference]` (via `pip install -r requirements.txt`) and system Tesseract (`brew install tesseract` or distro equivalent). |
 | Milvus Lite lock message | Another process was using the DB | Yo automatically moves the locked DB into `data/recoveries/` and recreates a clean one. |
 | `ask` returns no memory results | Namespace missing or empty | Verify ingestion ran successfully and that you used the correct `--ns`. |
 | Web lookup failed | Offline or DuckDuckGo blocked | Retry without `--web`, or investigate network connectivity. |

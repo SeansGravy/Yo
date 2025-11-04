@@ -1,4 +1,5 @@
 # --- Core framework ---
+setuptools>=81
 fastapi
 uvicorn[standard]
 python-dotenv
@@ -13,6 +14,9 @@ langchain-ollama
 langchain-milvus
 pymilvus
 ollama
+unstructured[local-inference]
+pytesseract
+packaging
 
 # --- Voice I/O (for v0.2) ---
 faster-whisper

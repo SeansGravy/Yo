@@ -4,7 +4,7 @@ Yo RAG Pipeline — Updated to use langchain-milvus (Milvus Lite compatible)
 
 from pathlib import Path
 from langchain_community.llms import Ollama
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_milvus import Milvus  # ✅ new package supports Lite
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_classic.chains.retrieval import create_retrieval_chain

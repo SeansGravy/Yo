@@ -18,26 +18,26 @@ These items are done and establish a stable base for future features.
 
 ---
 
-## Phase 1 — Rich RAG Foundation (Next release target)
+## Phase 1 — Rich RAG Foundation (🚀 v0.3.0 in progress)
 
 **Goal:** Expand Yo's memory so it comfortably ingests and reasons over mixed-format research archives.
 
 ### Key Deliverables
 1. **Ingestion upgrades**
-   * Add Markdown (`UnstructuredMarkdownLoader`), PDF (`PyPDFLoader`), and code-focused loaders (e.g., `LanguageParser`, `DirectoryLoader` with extension filters).
-   * Integrate OCR helpers (e.g., `unstructured[local-inference]`, `pytesseract`) so scanned PDFs and images are captured.
-   * Expose a `--loader` override for power users; default to auto-detect based on file extension and MIME type.
+   * ✅ Add Markdown (`UnstructuredMarkdownLoader`), PDF (`PyPDFLoader` with OCR fallback), and code-focused loaders with extension filters.
+   * ✅ Integrate OCR helpers (`unstructured[local-inference]`, `pytesseract`) so scanned PDFs and images are captured when dependencies are installed.
+   * ✅ Expose a `--loader` override for power users; default to auto-detect based on file extension.
    * Track ingestion stats (documents, chunks, tokens) and surface them after each run.
 2. **Quality & resilience**
-   * Auto-trigger `compact` when the Milvus DB grows beyond a configurable threshold (e.g., 100 MiB) with a pre-compact backup.
+   * ✅ Auto-trigger `compact` when the Milvus DB grows beyond a configurable threshold (e.g., 100 MiB) with a pre-compact backup.
    * Optional chunk re-embedding flow to rebuild namespaces when embeddings models change.
 3. **Developer ergonomics**
    * Refresh `yo_full_test.sh` to cover new loaders and auto-compaction behavior.
    * Add type hints and docstrings in `yo/brain.py` for new ingestion helpers.
 
 ### Success Metrics
-* CLI handles `.txt`, `.md`, and `.pdf` inputs end-to-end.
-* Regression script covers at least one Markdown and PDF sample.
+* CLI handles `.txt`, `.md`, `.pdf`, and source-code inputs end-to-end.
+* Regression script covers at least one Markdown, PDF, and code sample.
 * Database size stays within threshold without manual compaction.
 
 ### Dependencies
@@ -163,7 +163,7 @@ These items are done and establish a stable base for future features.
 | Version | Focus | Key Artifacts |
 | ------- | ----- | ------------- |
 | `v0.2.x` | Foundation hardening | Current CLI + docs + manual compact |
-| `v0.3.0` | Phase 1 – Rich RAG | Enhanced loaders (OCR, PDF, code), auto-compaction, updated tests |
+| `v0.3.0` | Phase 1 – Rich RAG | ✅ Enhanced loaders (OCR, PDF, code), auto-compaction, updated tests |
 | `v0.3.5` | Phase 1.5 – Lite UI | Minimal UI shell + shared state |
 | `v0.4.0` | Phase 2 – Web awareness | Pluggable search, hybrid retrieval, observability |
 | `v0.4.5` | Phase 2.5 – Memory & routing | Persistent conversations, adaptive model selection |

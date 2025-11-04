@@ -15,6 +15,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ollama pull llama3             # generation model
 ollama pull nomic-embed-text   # embedding model
+# Optional (macOS/Homebrew): `brew install tesseract` to enable OCR for scanned PDFs.
 ```
 
 ---
@@ -31,10 +32,13 @@ python3 -m yo.cli <command> [options]
 
 ```bash
 python3 -m yo.cli add ./docs/ --ns default
+python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns research --loader pdf
+python3 -m yo.cli add fixtures/ingest/example.py --ns code --loader code
 ```
 
-* Recursively ingests `.txt` files, chunks them, and stores the embeddings in `yo_default`.
-* You can point at a single file or directory.
+* Recursively ingests supported documents (text, Markdown, PDF, and source files) and stores the embeddings in `yo_<namespace>`.
+* `--loader` lets you override the detection logic (`auto`, `text`, `markdown`, `pdf`, `code`). Auto-mode mixes formats safely.
+* OCR is attempted automatically for scanned PDFs when `unstructured[local-inference]` and `pytesseract` are installed.
 
 ### Ask a question
 
@@ -82,7 +86,7 @@ python3 -m yo.cli cache clear
 python3 -m yo.cli compact
 ```
 
-Runs a SQLite `VACUUM` to reclaim space from `data/milvus_lite.db`.
+Runs a SQLite `VACUUM` to reclaim space from `data/milvus_lite.db`. Yo also auto-compacts when the database exceeds ~100 MiB after ingestion.
 
 ### Diagnose your setup
 
@@ -116,11 +120,12 @@ Executes `yo_full_test.sh` (if present) and writes a timestamped log next to the
 ## 🛠️ Troubleshooting
 
 * **Database locked** – Yo automatically renames the locked file into `data/recoveries/` and recreates a fresh database.
-* **No documents ingested** – Ensure the path contains `.txt` files. Support for Markdown/PDF is on the roadmap.
+* **No documents ingested** – Ensure the path contains supported formats (`.txt`, `.md`, `.pdf`, or common source extensions). Use `--loader` to override detection if needed.
 * **Web mode errors** – Failures to fetch are returned inline and cached results are reused for 24 hours.
 * **Missing models** – Verify `ollama pull llama3` and `ollama pull nomic-embed-text` have completed successfully.
 * **`git pull` refuses to update** – Commit or stash your local changes first (`git status` → `git add ...` → `git commit` or `git stash --include-untracked`), then rerun `git pull origin main`.
-* **Still stuck?** – Run `python3 -m yo.cli doctor` to diagnose Python/Ollama/dependency issues automatically.
+* **OCR fallback missing text** – Install Tesseract (`brew install tesseract` on macOS) so `pytesseract` can read scanned PDFs.
+* **Still stuck?** – Run `python3 -m yo.cli doctor` to diagnose Python/Ollama/dependency issues automatically, including the minimum `setuptools` version.
 
 ---
 
