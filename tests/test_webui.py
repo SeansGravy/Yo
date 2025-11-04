@@ -118,3 +118,25 @@ def test_ui_route_serves_dashboard(dummy_client: tuple[TestClient, DummyBrain]) 
     response = client.get("/ui")
     assert response.status_code == 200
     assert "Yo Lite UI" in response.text
+
+
+def test_status_endpoint_disables_ingestion_when_backends_missing(
+    dummy_client: tuple[TestClient, DummyBrain],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = dummy_client
+
+    degraded = BackendSummary(
+        milvus=BackendStatus(False, "Install Milvus Lite support via `pip install pymilvus[milvus_lite]`.", None),
+        ollama_python=BackendStatus(True, "Bindings ready", "0.1.0"),
+        ollama_cli=BackendStatus(False, "Install the Ollama CLI.", None),
+    )
+    monkeypatch.setattr(webui, "detect_backends", lambda: degraded)
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ingestion"]["enabled"] is False
+    reason = payload["ingestion"]["reason"] or ""
+    assert "Milvus Lite" in reason and "Ollama" in reason

@@ -146,6 +146,7 @@ Visit [http://localhost:8000/ui](http://localhost:8000/ui) for a dashboard that 
 * ✅ Backend health indicators for Milvus Lite and the Ollama runtime (with detected versions).
 * 📂 A namespace table showing the last-ingested timestamp plus cumulative document and chunk counts.
 * 📤 A file uploader that lets you ingest new content into any namespace without leaving the browser. The UI automatically disables ingestion controls when Milvus Lite or Ollama are missing so you know what to install next.
+  * Browser uploads require the optional `python-multipart` dependency, now included in `requirements.txt`. If you trimmed dependencies manually, reinstall it via `pip install python-multipart`.
 
 Need raw data? Poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for JSON that includes the namespace metrics, backend readiness, and ingestion enablement flags used by the UI.
 

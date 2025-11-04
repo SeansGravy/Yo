@@ -1,6 +1,7 @@
 # --- Core framework ---
 setuptools>=81
 fastapi
+Jinja2>=3.1
 uvicorn[standard]
 python-dotenv
 requests
@@ -15,6 +16,7 @@ langchain-milvus
 pymilvus
 milvus-lite>=2.4.4
 ollama
+python-multipart>=0.0.9
 unstructured[local-inference]
 pytesseract
 packaging

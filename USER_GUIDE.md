@@ -216,6 +216,7 @@ Open [http://localhost:8000/ui](http://localhost:8000/ui) to:
 * Review Milvus Lite and Ollama health (including detected versions) at a glance.
 * Inspect each namespace’s last-ingested timestamp along with cumulative document and chunk counts.
 * Upload one or more files directly into any namespace—select the target namespace, choose your files, and the UI will call the same ingestion pipeline used by the CLI. The uploader is disabled automatically when Milvus Lite or Ollama are missing, and the warning panel explains what needs to be installed.
+  * File uploads rely on the optional `python-multipart` package, which is bundled in `requirements.txt`. If you install dependencies manually, add it via `pip install python-multipart` so the browser uploader works.
 
 Need machine-readable data? Hit [http://localhost:8000/api/status](http://localhost:8000/api/status) for JSON containing backend readiness, namespace metrics, and the ingestion enablement flag the UI relies on.
 
