@@ -17,7 +17,7 @@ cd Yo
 
 ### 1.2 Prerequisites
 
-* Python 3.10+
+* Python 3.9+ (3.10+ recommended)
 * [Ollama](https://ollama.com/download) installed and running locally
 * macOS or Linux shell (Windows WSL works too)
 
@@ -33,6 +33,8 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+> The requirements file installs `langchain-ollama>=0.1.0`, `milvus-lite>=2.4.4`, and pins `setuptools>=81`, eliminating the lingering `pkg_resources` deprecation warnings seen in earlier releases.
 
 > **OCR note:** For scanned PDFs, install the Tesseract binary (`brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu) so `pytesseract` can extract text during ingestion.
 
@@ -56,8 +58,10 @@ Yo/
 ├── docs/                  # drop your `.txt` source files here (optional)
 ├── fixtures/ingest/       # sample Markdown, PDF, and code fixtures used by tests
 ├── yo/                    # Python package
+│   ├── __init__.py        # warning filters + package metadata
 │   ├── brain.py           # YoBrain orchestration logic
-│   └── cli.py             # command-line interface
+│   ├── cli.py             # command-line interface
+│   └── webui.py           # FastAPI stub for the Lite UI
 ├── yo_full_test.sh        # optional regression script (called by `verify`)
 └── Yo_Handoff_Report.md   # current project context & roadmap
 ```
@@ -158,8 +162,8 @@ python3 -m yo.cli compact
 python3 -m yo.cli doctor
 ```
 
-* Confirms Python version, Ollama availability, required Python packages, and minimum `setuptools` version.
-* Verifies that `yo_full_test.sh` and the `data/` directory are present.
+* Prints ✅/⚠️/❌ statuses for Python, `langchain`, `langchain-ollama>=0.1.0`, `setuptools>=81`, and `milvus-lite>=2.4.4`.
+* Verifies that Ollama, `pymilvus[milvus_lite]`, `yo_full_test.sh`, and the `data/` directory are present.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
 ### 4.8 `verify` — Run the regression suite
@@ -197,7 +201,19 @@ python3 -m yo.cli compact
 
 ---
 
-## 6. Troubleshooting & Tips
+## 6. Lite Web UI Preview
+
+A FastAPI stub for the upcoming Lite UI lives in `yo/webui.py`. Launch it with Uvicorn to explore the prototype status page:
+
+```bash
+uvicorn yo.webui:app --reload
+```
+
+Then open [http://localhost:8000/ui](http://localhost:8000/ui) to view current namespaces and confirm the backend is reachable. Future milestones will extend this endpoint with ingestion progress and interactive controls.
+
+---
+
+## 7. Troubleshooting & Tips
 
 | Issue | Likely Cause | Fix |
 | ----- | ------------ | --- |
@@ -214,7 +230,7 @@ python3 -m yo.cli compact
 
 ---
 
-## 7. Roadmap Snapshot
+## 8. Roadmap Snapshot
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
 

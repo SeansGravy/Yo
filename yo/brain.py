@@ -17,7 +17,7 @@ from typing import List, Tuple
 
 import requests
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ollama import Client
 from pymilvus import (
@@ -294,18 +294,25 @@ class YoBrain:
         print(summary)
         return summary
 
-    def ns_list(self) -> List[str]:
+    def ns_list(self, *, silent: bool = False) -> List[str]:
         namespaces = []
         for name in utility.list_collections():
             if name.startswith("yo_"):
                 namespaces.append(name[len("yo_"):])
-        if namespaces:
+
+        sorted_names = sorted(namespaces)
+
+        if silent:
+            return sorted_names
+
+        if sorted_names:
             print("🗂️  Available namespaces:")
-            for ns in sorted(namespaces):
+            for ns in sorted_names:
                 print(f" - {ns}")
         else:
             print("(no namespaces found)")
-        return sorted(namespaces)
+
+        return sorted_names
 
     def ns_delete(self, namespace: str) -> None:
         coll_name = self._collection_name(namespace)
