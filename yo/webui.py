@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from yo.backends import detect_backends
 from yo.brain import YoBrain
 
 
@@ -18,7 +19,7 @@ def get_brain() -> YoBrain:
     return YoBrain()
 
 
-app = FastAPI(title="Yo Lite UI", version="0.3.0")
+app = FastAPI(title="Yo Lite UI", version="0.3.1")
 
 
 @app.get("/healthz", response_class=JSONResponse)
@@ -66,3 +67,52 @@ def render_ui() -> HTMLResponse:
     """
 
     return HTMLResponse(content=html)
+
+
+@app.get("/api/status", response_class=JSONResponse)
+def api_status() -> JSONResponse:
+    """Return backend availability and namespace insights for the Lite UI."""
+
+    backends = detect_backends()
+    backend_info = {
+        "milvus": {
+            "available": backends.milvus.available,
+            "detail": backends.milvus.message,
+        },
+        "ollama": {
+            "python": {
+                "available": backends.ollama_python.available,
+                "detail": backends.ollama_python.message,
+            },
+            "cli": {
+                "available": backends.ollama_cli.available,
+                "detail": backends.ollama_cli.message,
+            },
+            "ready": backends.ollama_python.available and backends.ollama_cli.available,
+        },
+    }
+
+    namespaces: list[str] = []
+    activity: dict[str, Any] = {}
+    warning: str | None = None
+
+    try:
+        brain = get_brain()
+    except Exception as exc:  # pragma: no cover - backend initialization failure
+        warning = str(exc)
+    else:
+        try:
+            namespaces = brain.ns_list(silent=True)
+            activity = brain.namespace_activity()
+        except Exception as exc:  # pragma: no cover - backend query failure
+            warning = str(exc)
+
+    payload: dict[str, Any] = {
+        "backends": backend_info,
+        "namespaces": namespaces,
+        "namespace_activity": activity,
+    }
+    if warning:
+        payload["warning"] = warning
+
+    return JSONResponse(content=payload)

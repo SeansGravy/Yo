@@ -163,7 +163,8 @@ python3 -m yo.cli doctor
 ```
 
 * Prints ✅/⚠️/❌ statuses for Python, `langchain`, `langchain-ollama>=0.1.0`, `setuptools>=81`, and `milvus-lite>=2.4.4`.
-* Verifies that Ollama, `pymilvus[milvus_lite]`, `yo_full_test.sh`, and the `data/` directory are present.
+* Verifies that Ollama, the Ollama Python bindings, `pymilvus[milvus_lite]`, `yo_full_test.sh`, and the `data/` directory are present.
+* Reports whether the Milvus Lite runtime can be imported so vector-store operations don’t fail later.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
 ### 4.8 `verify` — Run the regression suite
@@ -174,6 +175,7 @@ python3 -m yo.cli verify
 
 * Executes `yo_full_test.sh` (if the script is present).
 * Logs the output to `yo_test_results_<timestamp>.log`.
+* Automatically skips ingestion and Q&A checks when Milvus Lite or the Ollama backend is missing, marking those sections with ⚠️ entries instead of failing the suite.
 
 ---
 
@@ -209,7 +211,7 @@ A FastAPI stub for the upcoming Lite UI lives in `yo/webui.py`. Launch it with U
 uvicorn yo.webui:app --reload
 ```
 
-Then open [http://localhost:8000/ui](http://localhost:8000/ui) to view current namespaces and confirm the backend is reachable. Future milestones will extend this endpoint with ingestion progress and interactive controls.
+Then open [http://localhost:8000/ui](http://localhost:8000/ui) to view current namespaces and confirm the backend is reachable. You can also poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for a JSON payload containing backend availability plus last-ingest timestamps for each namespace. Future milestones will extend these endpoints with ingestion progress and interactive controls.
 
 ---
 
@@ -224,6 +226,7 @@ Then open [http://localhost:8000/ui](http://localhost:8000/ui) to view current n
 | `ask` returns no memory results | Namespace missing or empty | Verify ingestion ran successfully and that you used the correct `--ns`. |
 | Web lookup failed | Offline or DuckDuckGo blocked | Retry without `--web`, or investigate network connectivity. |
 | CLI shows dependency errors | Missing local setup steps | Run `python3 -m yo.cli doctor` to see which requirement is missing. |
+| `yo.cli verify` reports skipped steps | Milvus Lite or the Ollama backend is not installed | Install `pymilvus[milvus_lite]` plus the Ollama CLI and Python bindings (`pip install ollama langchain-ollama`) to run the full suite. |
 | `git pull` would overwrite files | You have local edits not yet saved | Run `git status` to inspect, then either commit (`git add` → `git commit`) or stash (`git stash --include-untracked`) before pulling again. |
 
 **Tip:** Keep `yo_full_test.sh` up-to-date with your end-to-end checks. `yo.cli verify` depends on it.

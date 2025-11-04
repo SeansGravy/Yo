@@ -103,6 +103,9 @@ python3 -m yo.cli verify
 ```
 
 Executes `yo_full_test.sh` (if present) and writes a timestamped log next to the script.
+If Milvus Lite or the Ollama backend are missing, the suite now runs the
+checks that remain valid and marks the skipped portions with ⚠️ entries instead
+of failing outright.
 
 ---
 
@@ -122,7 +125,7 @@ Executes `yo_full_test.sh` (if present) and writes a timestamped log next to the
 * **Database locked** – Yo automatically renames the locked file into `data/recoveries/` and recreates a fresh database.
 * **No documents ingested** – Ensure the path contains supported formats (`.txt`, `.md`, `.pdf`, or common source extensions). Use `--loader` to override detection if needed.
 * **Web mode errors** – Failures to fetch are returned inline and cached results are reused for 24 hours.
-* **Missing models** – Verify `ollama pull llama3` and `ollama pull nomic-embed-text` have completed successfully.
+* **Missing models or backends** – Verify `ollama pull llama3`, `ollama pull nomic-embed-text`, and that the Ollama CLI itself is installed. When Milvus Lite or Ollama are absent, `python3 -m yo.cli verify` and `yo_full_test.sh` will skip vector-store and generation checks and report the reason so you can install the missing pieces.
 * **`git pull` refuses to update** – Commit or stash your local changes first (`git status` → `git add ...` → `git commit` or `git stash --include-untracked`), then rerun `git pull origin main`.
 * **OCR fallback missing text** – Install Tesseract (`brew install tesseract` on macOS) so `pytesseract` can read scanned PDFs.
 * **`pkg_resources` warnings** – Yo switched to `importlib.metadata` for version checks and locally filters Milvus Lite’s deprecated `pkg_resources` warning; avoid adding new `pkg_resources` imports when contributing.
@@ -139,6 +142,7 @@ uvicorn yo.webui:app --reload
 ```
 
 Visit [http://localhost:8000/ui](http://localhost:8000/ui) to see a simple status page that reuses YoBrain for namespace listings. The view will grow to expose ingestion progress and controls as the Lite UI milestone lands.
+You can also poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for a JSON snapshot containing backend availability, namespaces, and their last-ingest timestamps.
 
 ---
 

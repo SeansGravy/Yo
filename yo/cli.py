@@ -16,8 +16,7 @@ Status = Literal["ok", "warn", "fail"]
 
 from packaging.version import InvalidVersion, Version
 
-from packaging.version import InvalidVersion, Version
-
+from yo.backends import detect_backends
 from yo.brain import YoBrain
 
 
@@ -32,11 +31,39 @@ def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
         print("⚠️  yo_full_test.sh not found. Please recreate it first.")
         raise SystemExit(1)
 
+    backends = detect_backends()
+
+    env = dict(os.environ)
+
+    env["YO_HAVE_MILVUS"] = "1" if backends.milvus.available else "0"
+    env["YO_MILVUS_REASON"] = backends.milvus.message
+    env["YO_SKIP_MILVUS"] = "0" if backends.milvus.available else "1"
+    if not backends.milvus.available:
+        print(
+            "⚠️  Milvus Lite not detected — vector-store operations disabled. "
+            f"{backends.milvus.message}"
+        )
+
+    env["YO_HAVE_OLLAMA_PY"] = "1" if backends.ollama_python.available else "0"
+    env["YO_OLLAMA_PY_REASON"] = backends.ollama_python.message
+
+    env["YO_HAVE_OLLAMA_CLI"] = "1" if backends.ollama_cli.available else "0"
+    env["YO_OLLAMA_CLI_REASON"] = backends.ollama_cli.message
+
+    ollama_ready = backends.ollama_python.available and backends.ollama_cli.available
+    env["YO_SKIP_OLLAMA"] = "0" if ollama_ready else "1"
+
+    if not ollama_ready:
+        print("⚠️  Ollama backend incomplete — generation tests will be skipped.")
+        if not backends.ollama_python.available:
+            print(f"   • {backends.ollama_python.message}")
+        if not backends.ollama_cli.available:
+            print(f"   • {backends.ollama_cli.message}")
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     logfile = Path.cwd() / f"yo_test_results_{ts}.log"
     print(f"🧠 Running full Yo test suite… (logging to {logfile.name})")
 
-    env = dict(os.environ)
     env["YO_LOGFILE"] = str(logfile)
 
     result = subprocess.run(
@@ -191,27 +218,44 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
                 ),
             )
         )
-    statuses.append(_run_check("Ollama available", lambda: _check_executable("ollama", "Ollama")))
+    statuses.append(
+        _run_check(
+            "Ollama CLI version",
+            lambda: _check_executable(
+                "ollama",
+                "Ollama",
+                "Install the Ollama CLI from https://ollama.com/download and ensure it is on your PATH.",
+            ),
+        )
+    )
     statuses.append(
         _run_check(
             "pymilvus installed",
             lambda: _check_module("pymilvus", "Install with: pip install pymilvus[milvus_lite]"),
         )
     )
-    all_ok &= _run_check(
-        "langchain-ollama installed",
-        lambda: _check_distribution(
-            "langchain-ollama",
-            "Install with: pip install langchain-ollama",
-        ),
+
+    backends = detect_backends()
+    statuses.append(
+        _report(
+            "Milvus Lite runtime",
+            "ok" if backends.milvus.available else "fail",
+            backends.milvus.message,
+        )
     )
-    all_ok &= _run_check(
-        "setuptools>=81",
-        lambda: _check_distribution(
-            "setuptools",
-            "Install with: pip install -U 'setuptools>=81'",
-            min_version="81",
-        ),
+    statuses.append(
+        _report(
+            "Ollama Python bindings",
+            "ok" if backends.ollama_python.available else "fail",
+            backends.ollama_python.message,
+        )
+    )
+    statuses.append(
+        _report(
+            "Ollama CLI detected",
+            "ok" if backends.ollama_cli.available else "fail",
+            backends.ollama_cli.message,
+        )
     )
 
     data_dir = Path("data")
