@@ -7,9 +7,12 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from importlib import metadata as importlib_metadata
 from importlib import util as import_util
 from pathlib import Path
 from typing import Callable, Optional
+
+from packaging.version import InvalidVersion, Version
 
 from yo.brain import YoBrain
 
@@ -109,6 +112,27 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
             return False, hint
         return True, f"Python module '{module}' is available."
 
+    def _check_distribution(
+        dist: str,
+        hint: str,
+        min_version: str | None = None,
+    ) -> tuple[bool, str]:
+        try:
+            version = importlib_metadata.version(dist)
+        except importlib_metadata.PackageNotFoundError:
+            return False, hint
+
+        detail = f"Python distribution '{dist}' {version} detected."
+        if not min_version:
+            return True, detail
+
+        try:
+            if Version(version) < Version(min_version):
+                return False, f"{dist} {version} found. Upgrade to {min_version}+ via `pip install -U {dist}`."
+        except InvalidVersion:
+            detail += " (unable to compare versions)"
+        return True, detail
+
     all_ok &= _run_check("Python version", _check_python)
     all_ok &= _run_check("Ollama available", lambda: _check_executable("ollama", "Ollama"))
     all_ok &= _run_check(
@@ -122,6 +146,21 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
     all_ok &= _run_check(
         "langchain installed",
         lambda: _check_module("langchain", "Install with: pip install -r requirements.txt"),
+    )
+    all_ok &= _run_check(
+        "langchain-ollama installed",
+        lambda: _check_distribution(
+            "langchain-ollama",
+            "Install with: pip install langchain-ollama",
+        ),
+    )
+    all_ok &= _run_check(
+        "setuptools>=81",
+        lambda: _check_distribution(
+            "setuptools",
+            "Install with: pip install -U 'setuptools>=81'",
+            min_version="81",
+        ),
     )
 
     data_dir = Path("data")

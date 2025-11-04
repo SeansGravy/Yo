@@ -12,7 +12,7 @@
 git clone https://github.com/SeansGravy/Yo.git
 cd Yo
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt  # installs langchain-ollama + pins setuptools>=81
 ollama pull llama3             # generation model
 ollama pull nomic-embed-text   # embedding model
 # Optional (macOS/Homebrew): `brew install tesseract` to enable OCR for scanned PDFs.
@@ -125,7 +125,8 @@ Executes `yo_full_test.sh` (if present) and writes a timestamped log next to the
 * **Missing models** – Verify `ollama pull llama3` and `ollama pull nomic-embed-text` have completed successfully.
 * **`git pull` refuses to update** – Commit or stash your local changes first (`git status` → `git add ...` → `git commit` or `git stash --include-untracked`), then rerun `git pull origin main`.
 * **OCR fallback missing text** – Install Tesseract (`brew install tesseract` on macOS) so `pytesseract` can read scanned PDFs.
-* **Still stuck?** – Run `python3 -m yo.cli doctor` to diagnose Python/Ollama/dependency issues automatically, including the minimum `setuptools` version.
+* **`pkg_resources` warnings** – Yo switched to `importlib.metadata` for version checks; avoid adding new `pkg_resources` imports when contributing.
+* **Still stuck?** – Run `python3 -m yo.cli doctor` to diagnose Python/Ollama/dependency issues automatically, including `langchain-ollama` availability and the minimum `setuptools` version.
 
 ---
 
