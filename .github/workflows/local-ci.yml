@@ -33,6 +33,7 @@ jobs:
       - name: Publish telemetry summary
         if: always()
         run: |
+          python3 -m yo.cli explain verify || true
           python3 - <<'PY'
 import json
 import os
@@ -76,5 +77,6 @@ PY
           path: |
             data/logs/test_summary.json
             data/logs/test_history.json
+            data/logs/dependency_history.json
             data/logs/badge.md
             yo_test_results_*.log

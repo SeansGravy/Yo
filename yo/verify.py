@@ -12,6 +12,9 @@ from typing import Any, Dict, Sequence
 
 
 SUMMARY_LINE_PATTERN = re.compile(r"=+ (.+) =+")
+MISSING_IMPORT_PATTERN = re.compile(
+    r"(?:ModuleNotFoundError|ImportError):\s+No module named ['\"]([^'\"]+)['\"]"
+)
 
 
 def _ensure_logs_dir() -> Path:
@@ -20,7 +23,7 @@ def _ensure_logs_dir() -> Path:
     return path
 
 
-def _parse_pytest_summary(summary_text: str) -> Dict[str, Any]:
+def parse_pytest_summary(summary_text: str) -> Dict[str, Any]:
     summary_line: str | None = None
     for raw in reversed(summary_text.splitlines()):
         line = raw.strip()
@@ -77,6 +80,10 @@ def _parse_pytest_summary(summary_text: str) -> Dict[str, Any]:
             "raw_summary": summary_line,
         }
     )
+
+    missing_modules = sorted({match.group(1) for match in MISSING_IMPORT_PATTERN.finditer(summary_text)})
+    if missing_modules:
+        metrics["missing_modules"] = missing_modules
     return metrics
 
 
@@ -106,12 +113,16 @@ def run_pytest_with_metrics(args: Sequence[str] | None = None) -> tuple[int, Dic
     duration = time.perf_counter() - start
 
     full_output = "".join(output_chunks)
-    metrics = _parse_pytest_summary(full_output)
+    metrics = parse_pytest_summary(full_output)
     metrics.setdefault("duration_seconds", round(duration, 3))
     metrics.setdefault("tests_total", 0)
     metrics.setdefault("tests_passed", 0)
     metrics.setdefault("tests_failed", 0)
     metrics.setdefault("raw_summary", "")
+
+    missing_modules = sorted({match.group(1) for match in MISSING_IMPORT_PATTERN.finditer(full_output)})
+    if missing_modules:
+        metrics["missing_modules"] = missing_modules
 
     return process.returncode, metrics, full_output
 
@@ -176,6 +187,8 @@ def write_test_summary(result: str = "✅ Verify successful", **extra: Any) -> D
     if extra:
         summary.update(extra)
 
+    summary.setdefault("missing_modules", [])
+
     tests_total = summary.get("tests_total")
     tests_passed = summary.get("tests_passed")
     if tests_total:
@@ -190,4 +203,4 @@ def write_test_summary(result: str = "✅ Verify successful", **extra: Any) -> D
     return summary
 
 
-__all__ = ["run_pytest_with_metrics", "write_test_summary"]
+__all__ = ["run_pytest_with_metrics", "write_test_summary", "parse_pytest_summary"]

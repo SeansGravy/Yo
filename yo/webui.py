@@ -19,6 +19,12 @@ from starlette.datastructures import UploadFile
 from yo.backends import BackendStatus, detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
 from yo.logging_utils import get_logger
+from yo.telemetry import (
+    compute_trend,
+    load_dependency_history,
+    load_test_history,
+    load_test_summary,
+)
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -216,6 +222,87 @@ def api_status() -> JSONResponse:
         payload["warning"] = warning
 
     return JSONResponse(content=payload)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(_: Request) -> HTMLResponse:
+    summary = load_test_summary()
+    history = load_test_history()
+    dependencies = load_dependency_history(limit=5)
+    trend = compute_trend(history, days=7)
+
+    status_line = "Unknown"
+    if summary:
+        status_line = (
+            f"{summary.get('status', 'unknown')} — {summary.get('tests_passed', 0)}/{summary.get('tests_total', 0)} passed"
+        )
+        if summary.get("duration_seconds") is not None:
+            status_line += f" in {float(summary['duration_seconds']):.2f}s"
+
+    dependency_lines = "".join(
+        f"<li>{event.get('timestamp')}: {event.get('action')} ({', '.join(event.get('packages', []))})</li>"
+        for event in dependencies
+    ) or "<li>No recent dependency events.</li>"
+
+    trend_rows = "".join(
+        "<tr><td>{ts}</td><td>{status}</td><td>{fail}</td><td>{duration}</td><td>{rate}</td></tr>".format(
+            ts=entry.get("timestamp", ""),
+            status=entry.get("status", ""),
+            fail=entry.get("tests_failed", 0),
+            duration=("{}s".format(round(float(entry.get("duration_seconds")), 2)) if entry.get("duration_seconds") is not None else "n/a"),
+            rate=("{}%".format(round(float(entry.get("pass_rate_percent")), 1)) if entry.get("pass_rate_percent") is not None else "n/a"),
+        )
+        for entry in trend
+    ) or "<tr><td colspan='5'>No history available.</td></tr>"
+
+    try:
+        brain = get_brain()
+        namespace_activity = brain.namespace_activity()
+        namespace_section = "".join(
+            f"<li>{name}: {details.get('documents', 0)} docs, {details.get('chunks', 0)} chunks</li>"
+            for name, details in namespace_activity.items()
+        ) or "<li>No namespaces recorded.</li>"
+    except Exception as exc:  # pragma: no cover - defensive guard for dashboard
+        namespace_section = f"<li>Error retrieving namespaces: {exc}</li>"
+
+    html = f"""
+    <html>
+      <head>
+        <title>Yo Dashboard</title>
+        <style>
+          body {{ font-family: Arial, sans-serif; margin: 2rem; }}
+          h2 {{ border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }}
+          table {{ border-collapse: collapse; width: 100%; margin-top: 0.5rem; }}
+          th, td {{ border: 1px solid #ddd; padding: 0.5rem; text-align: left; }}
+          th {{ background: #f5f5f5; }}
+        </style>
+      </head>
+      <body>
+        <h1>Yo Developer Dashboard</h1>
+        <section>
+          <h2>Latest Verification</h2>
+          <p>{status_line}</p>
+        </section>
+        <section>
+          <h2>Recent Trend (last {len(trend)} runs)</h2>
+          <table>
+            <thead><tr><th>Timestamp</th><th>Status</th><th>Failures</th><th>Duration</th><th>Pass Rate</th></tr></thead>
+            <tbody>{trend_rows}</tbody>
+          </table>
+        </section>
+        <section>
+          <h2>Dependency Events</h2>
+          <ul>{dependency_lines}</ul>
+        </section>
+        <section>
+          <h2>Namespace Activity</h2>
+          <ul>{namespace_section}</ul>
+        </section>
+      </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html)
 
 
 @app.post("/api/ingest", response_class=JSONResponse)

@@ -21,7 +21,15 @@ from packaging.version import InvalidVersion, Version
 from yo.backends import detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
 from yo.config import get_config, reset_config, serialize_config, update_config_value
+from yo.deps import deps_check_command, deps_freeze_command, deps_repair_command
 from yo.verify import run_pytest_with_metrics, write_test_summary
+from yo.telemetry import (
+    compute_trend,
+    load_dependency_history,
+    load_test_history,
+    load_test_summary,
+    summarize_failures,
+)
 
 
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
@@ -424,20 +432,22 @@ def _handle_config_reset(args: argparse.Namespace, _: YoBrain | None = None) -> 
     print(f"✅ Reset {detail} for {scope}.")
 
 
+def _handle_deps_check(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    deps_check_command()
+
+
+def _handle_deps_repair(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    deps_repair_command()
+
+
+def _handle_deps_freeze(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    deps_freeze_command()
+
+
 def _handle_telemetry_report(_: argparse.Namespace, __: YoBrain | None = None) -> None:
-    history_path = Path("data/logs/test_history.json")
-    if not history_path.exists():
+    entries = load_test_history()
+    if not entries:
         print("ℹ️  No telemetry data recorded yet. Run `python3 -m yo.cli verify` first.")
-        return
-
-    try:
-        entries = json.loads(history_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        print("⚠️  Telemetry history is corrupted. Remove data/logs/test_history.json and rerun verify.")
-        return
-
-    if not isinstance(entries, list) or not entries:
-        print("ℹ️  Telemetry history is empty.")
         return
 
     last = entries[-1]
@@ -471,6 +481,138 @@ def _handle_telemetry_report(_: argparse.Namespace, __: YoBrain | None = None) -
     else:
         print("Average duration: n/a")
     print(f"Pass rate: {pass_rate:.1f}%")
+
+
+def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    summary = load_test_summary()
+    history = load_test_history()
+    dependency_history = load_dependency_history(limit=10)
+
+    if not summary:
+        print("ℹ️  No verification telemetry available. Run `python3 -m yo.cli verify` first.")
+        return
+
+    status = summary.get("status", "unknown")
+    print("🧠 Yo Verify Insight\n")
+    print(f"Current status: {status}")
+
+    tests_total = summary.get("tests_total")
+    tests_failed = summary.get("tests_failed")
+    duration = summary.get("duration_seconds")
+    if tests_total is not None:
+        print(f"Tests: {summary.get('tests_passed', 0)}/{tests_total} passed")
+    if duration is not None:
+        print(f"Duration: {float(duration):.2f}s")
+
+    missing_modules = summary.get("missing_modules") or []
+    if missing_modules:
+        print("\n⚠️  Missing modules detected:")
+        for module in missing_modules:
+            print(f"   • {module}")
+    elif tests_failed:
+        print("\n⚠️  Failures detected. See log for more detail.")
+    else:
+        print("\n✅ No missing modules or failures in latest run.")
+
+    failure_summary = summarize_failures(history, window=5)
+    recent_failures = failure_summary.get("recent_failures", [])
+    if recent_failures:
+        print("\n🔍 Recent failure details:")
+        for entry in recent_failures:
+            ts = entry.get("timestamp")
+            status_line = entry.get("status", "unknown")
+            print(f"   • {ts}: {status_line} (failed tests: {entry.get('tests_failed', 0)})")
+
+    recent_missing = failure_summary.get("missing_modules", [])
+    if recent_missing:
+        print("\n🧩 Recurring missing modules: " + ", ".join(recent_missing))
+
+    if dependency_history and (missing_modules or recent_missing):
+        print("\n🛠  Recent dependency activity:")
+        for event in dependency_history[-5:]:
+            timestamp = event.get("timestamp")
+            action = event.get("action")
+            packages = ", ".join(event.get("packages", []))
+            print(f"   • {timestamp}: {action} ({packages})")
+
+    if missing_modules:
+        print("\n💡 Suggested action: run `python3 -m yo.cli deps repair` to attempt automatic installation.")
+
+    if getattr(args, "web", False):
+        try:
+            import requests  # type: ignore
+        except ImportError:
+            print("\n🌐 --web requested but the 'requests' package is not installed.")
+        else:
+            for module in missing_modules[:3]:
+                package = module.replace("_", "-")
+                url = f"https://pypi.org/pypi/{package}/json"
+                try:
+                    resp = requests.get(url, timeout=5)
+                except Exception as exc:  # pragma: no cover - network failure path
+                    print(f"\n🌐 Unable to fetch metadata for {package}: {exc}")
+                    continue
+                if resp.status_code == 200:
+                    info = resp.json().get("info", {})
+                    summary_text = info.get("summary") or info.get("description") or "No summary available."
+                    snippet = summary_text.strip().replace("\n", " ")
+                    if len(snippet) > 200:
+                        snippet = snippet[:200] + "..."
+                    print(f"\n🌐 {package}: {snippet}")
+                else:
+                    print(f"\n🌐 Unable to fetch metadata for {package} (HTTP {resp.status_code}).")
+
+
+def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    summary = load_test_summary()
+    history = load_test_history(limit=10)
+    dependency_history = load_dependency_history(limit=5)
+    trend = compute_trend(history, days=7)
+
+    print("🖥️  Yo Developer Dashboard\n")
+
+    if summary:
+        print("Latest Verification:")
+        print(f"   Status: {summary.get('status', 'unknown')}")
+        print(
+            "   Tests: {} passed / {} total".format(
+                summary.get("tests_passed", 0), summary.get("tests_total", 0)
+            )
+        )
+        duration = summary.get("duration_seconds")
+        if duration is not None:
+            print(f"   Duration: {float(duration):.2f}s")
+    else:
+        print("Latest Verification: unavailable")
+
+    if trend:
+        print("\nRecent Trend (last {} runs):".format(len(trend)))
+        for entry in trend:
+            ts = entry.get("timestamp")
+            status = entry.get("status")
+            failures = entry.get("tests_failed", 0)
+            duration = entry.get("duration_seconds")
+            pass_rate = entry.get("pass_rate_percent")
+            line = f"   • {ts} — {status}".strip()
+            if failures:
+                line += f" (failures: {failures})"
+            if duration is not None:
+                line += f", {float(duration):.2f}s"
+            if pass_rate is not None:
+                line += f", pass rate: {pass_rate:.1f}%"
+            print(line)
+    else:
+        print("\nRecent Trend: unavailable")
+
+    if dependency_history:
+        print("\nDependency Events:")
+        for event in dependency_history:
+            timestamp = event.get("timestamp")
+            action = event.get("action")
+            packages = ", ".join(event.get("packages", []))
+            print(f"   • {timestamp}: {action} ({packages})")
+    else:
+        print("\nDependency Events: none recorded")
 
 def _add_ns_options(parser: argparse.ArgumentParser) -> None:
     default_ns = _active_namespace_default()
@@ -543,11 +685,33 @@ def build_parser() -> argparse.ArgumentParser:
     config_reset.add_argument("--ns", help="Namespace override (optional)")
     config_reset.set_defaults(handler=_handle_config_reset)
 
+    deps_parser = subparsers.add_parser("deps", help="Dependency intelligence tools")
+    deps_sub = deps_parser.add_subparsers(dest="deps_command", required=True)
+
+    deps_check = deps_sub.add_parser("check", help="Inspect dependency status")
+    deps_check.set_defaults(handler=_handle_deps_check)
+
+    deps_repair = deps_sub.add_parser("repair", help="Attempt to resolve missing dependencies")
+    deps_repair.set_defaults(handler=_handle_deps_repair)
+
+    deps_freeze = deps_sub.add_parser("freeze", help="Write requirements lockfile")
+    deps_freeze.set_defaults(handler=_handle_deps_freeze)
+
     telemetry_parser = subparsers.add_parser("telemetry", help="Test telemetry utilities")
     telemetry_sub = telemetry_parser.add_subparsers(dest="telemetry_command", required=True)
 
     telemetry_report = telemetry_sub.add_parser("report", help="Show recent test telemetry")
     telemetry_report.set_defaults(handler=_handle_telemetry_report)
+
+    explain_parser = subparsers.add_parser("explain", help="Explain recent operations")
+    explain_sub = explain_parser.add_subparsers(dest="explain_command", required=True)
+
+    explain_verify = explain_sub.add_parser("verify", help="Explain the latest verification run")
+    explain_verify.add_argument("--web", action="store_true", help="Fetch external context for missing packages")
+    explain_verify.set_defaults(handler=_handle_explain_verify)
+
+    dashboard_parser = subparsers.add_parser("dashboard", help="Show the developer dashboard")
+    dashboard_parser.set_defaults(handler=_handle_dashboard_cli)
 
     cache_parser = subparsers.add_parser("cache", help="Web cache utilities")
     cache_sub = cache_parser.add_subparsers(dest="cache_command", required=True)
@@ -579,7 +743,7 @@ def main() -> None:
         parser.error("No command provided")
 
     brain: YoBrain | None = None
-    if args.command not in {"verify", "doctor", "config", "telemetry"}:
+    if args.command not in {"verify", "doctor", "config", "telemetry", "deps", "explain", "dashboard"}:
         ns_override = getattr(args, "ns", None)
         brain = YoBrain(namespace=ns_override)
 
