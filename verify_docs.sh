@@ -16,7 +16,7 @@ else
 fi
 
 # 2️⃣ Confirm key docs exist
-for file in README.md USER_GUIDE.md ROADMAP.md CHANGELOG.md docs/CLI.md; do
+for file in README.md docs/USER_GUIDE.md docs/ROADMAP.md docs/Yo_Handoff_Report.md docs/README.md; do
   if [[ -f "$file" ]]; then
     echo "✅ $file exists"
   else
@@ -25,10 +25,10 @@ for file in README.md USER_GUIDE.md ROADMAP.md CHANGELOG.md docs/CLI.md; do
 done
 
 # 3️⃣ Lint for command examples in README
-if grep -q "python3 -m yo.cli add" README.md && grep -q "yo.cli ask" README.md; then
-  echo "✅ CLI usage examples present in README.md"
+if grep -q "python3 -m yo.cli add" docs/README.md && grep -q "yo.cli ask" docs/README.md; then
+  echo "✅ CLI usage examples present in docs/README.md"
 else
-  echo "⚠️ Missing CLI usage examples in README.md"
+  echo "⚠️ Missing CLI usage examples in docs/README.md"
 fi
 
 # 4️⃣ Verify CHANGELOG version
