@@ -7,11 +7,9 @@ import os
 import subprocess
 import sys
 from datetime import datetime
-from importlib import metadata, util as import_util
+from importlib import util as import_util
 from pathlib import Path
 from typing import Callable, Optional
-
-from packaging.version import Version
 
 from yo.brain import YoBrain
 
@@ -111,19 +109,6 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
             return False, hint
         return True, f"Python module '{module}' is available."
 
-    def _check_package_version(package: str, minimum: str) -> tuple[bool, str]:
-        try:
-            version = metadata.version(package)
-        except metadata.PackageNotFoundError:
-            return False, f"Install with: pip install {package}"
-        if Version(version) < Version(minimum):
-            return (
-                False,
-                f"Detected {package} {version}. Upgrade to {minimum} or newer with "
-                f"`pip install --upgrade {package}`."
-            )
-        return True, f"{package} {version} detected."
-
     all_ok &= _run_check("Python version", _check_python)
     all_ok &= _run_check("Ollama available", lambda: _check_executable("ollama", "Ollama"))
     all_ok &= _run_check(
@@ -138,7 +123,6 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
         "langchain installed",
         lambda: _check_module("langchain", "Install with: pip install -r requirements.txt"),
     )
-    all_ok &= _run_check("setuptools ≥ 81", lambda: _check_package_version("setuptools", "81"))
 
     data_dir = Path("data")
     all_ok &= _report(
@@ -173,7 +157,7 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
 
 def _handle_add(args: argparse.Namespace, brain: YoBrain | None) -> None:
     assert brain is not None
-    brain.ingest(args.path, namespace=args.ns, loader=args.loader)
+    brain.ingest(args.path, namespace=args.ns)
 
 
 def _handle_ask(args: argparse.Namespace, brain: YoBrain | None) -> None:
@@ -226,14 +210,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser = subparsers.add_parser("add", help="Ingest files into a namespace")
     add_parser.add_argument("path", help="Path to a file or directory to ingest")
     _add_ns_options(add_parser)
-    add_parser.add_argument(
-        "--loader",
-        default="auto",
-        help=(
-            "Loader override to use (auto, text, markdown, pdf, code). "
-            "Defaults to auto."
-        ),
-    )
     add_parser.set_defaults(handler=_handle_add)
 
     ask_parser = subparsers.add_parser("ask", help="Ask a question against a namespace")

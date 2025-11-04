@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================
-# Yo Full Test Script — v0.3.0 Validation Suite
+# Yo Full Test Script — v0.2.0 Validation Suite
 # =====================================================
 
 set -u
@@ -43,20 +43,13 @@ run "Data directory present" "ls data || echo 'No data folder yet (expected on f
 # 2️⃣ Namespace management
 run "List namespaces" "python3 -m yo.cli ns list"
 run "Ensure test namespace absent" "python3 -m yo.cli ns delete --ns test || echo 'Namespace test not found, skipping.'"
-run "Ensure loader_markdown namespace absent" "python3 -m yo.cli ns delete --ns loader_markdown || echo 'Namespace loader_markdown not found, skipping.'"
-run "Ensure loader_pdf namespace absent" "python3 -m yo.cli ns delete --ns loader_pdf || echo 'Namespace loader_pdf not found, skipping.'"
-run "Ensure loader_code namespace absent" "python3 -m yo.cli ns delete --ns loader_code || echo 'Namespace loader_code not found, skipping.'"
 
 # 3️⃣ Ingestion
 run "Ingest docs into default" "python3 -m yo.cli add ./docs/ --ns default"
 run "Ingest docs into test" "python3 -m yo.cli add ./docs/ --ns test"
-run "Ingest markdown with explicit loader" "python3 -m yo.cli add fixtures/ingest/roadmap_note.md --ns loader_markdown --loader markdown"
-run "Ingest PDF with OCR fallback" "python3 -m yo.cli add fixtures/ingest/brochure.pdf --ns loader_pdf --loader pdf"
-run "Ingest source code with code loader" "python3 -m yo.cli add fixtures/ingest/example.py --ns loader_code --loader code"
 
 # 4️⃣ Summarization
 run "Summarize default namespace" "python3 -m yo.cli summarize --ns default"
-run "Summarize markdown namespace" "python3 -m yo.cli summarize --ns loader_markdown"
 
 # 5️⃣ Q&A (local memory)
 run "Answer question from memory" "python3 -m yo.cli ask 'What does Yo do?' --ns default"

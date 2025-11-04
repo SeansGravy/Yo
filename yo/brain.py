@@ -12,33 +12,12 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timedelta
-from importlib import util as import_util
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import List, Tuple
 
 import requests
-from langchain_community.document_loaders import TextLoader
-
-try:  # Optional rich loaders
-    from langchain_community.document_loaders import PyPDFLoader
-except ImportError:  # pragma: no cover - optional dependency
-    PyPDFLoader = None
-
-try:  # Markdown with layout awareness
-    from langchain_community.document_loaders import UnstructuredMarkdownLoader
-except ImportError:  # pragma: no cover - optional dependency
-    UnstructuredMarkdownLoader = None
-
-try:  # OCR-capable PDF loader
-    from langchain_community.document_loaders import UnstructuredPDFLoader
-except ImportError:  # pragma: no cover - optional dependency
-    UnstructuredPDFLoader = None
-
-try:  # Source code loader with metadata
-    from langchain_community.document_loaders import PythonLoader
-except ImportError:  # pragma: no cover - optional dependency
-    PythonLoader = None
-from langchain_ollama import OllamaEmbeddings
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.embeddings import OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ollama import Client
 from pymilvus import (
@@ -54,32 +33,6 @@ from pymilvus import (
 EMBED_DIM = 768
 CACHE_TTL = timedelta(hours=24)
 
-SUPPORTED_LOADERS = {"auto", "text", "markdown", "pdf", "code"}
-CODE_EXTENSIONS = {
-    ".py",
-    ".ipynb",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".java",
-    ".go",
-    ".rs",
-    ".rb",
-    ".php",
-    ".c",
-    ".cpp",
-    ".cs",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".ps1",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".json",
-}
-
 
 class YoBrain:
     """Primary orchestration layer for Yo."""
@@ -89,7 +42,6 @@ class YoBrain:
         data_dir: Path | str = "data",
         model_name: str = "llama3",
         embed_model: str = "nomic-embed-text",
-        auto_compact_threshold: int = 100 * 1024 * 1024,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -103,8 +55,6 @@ class YoBrain:
 
         self.client = Client()
         self.embeddings = OllamaEmbeddings(model=self.embed_model)
-        self.auto_compact_threshold = auto_compact_threshold
-        self._loader_warnings: Dict[str, bool] = {}
 
         self._connect_milvus()
 
@@ -156,48 +106,7 @@ class YoBrain:
     def _ensure_collection(self, namespace: str) -> Collection:
         name = self._collection_name(namespace)
         if name in utility.list_collections():
-            collection = Collection(name)
-
-            # Older databases created before the CLI refactor only stored
-            # two fields (id + embedding).  Newer versions expect text and
-            # source metadata as well.  When we detect a legacy schema we
-            # transparently recreate the collection so inserts match the
-            # schema Milvus advertises.
-            expected = {
-                "id": DataType.INT64,
-                "text": DataType.VARCHAR,
-                "source": DataType.VARCHAR,
-                "embedding": DataType.FLOAT_VECTOR,
-            }
-            actual = {field.name: field for field in collection.schema.fields}
-
-            schema_mismatch = False
-            for field_name, field_type in expected.items():
-                field = actual.get(field_name)
-                if field is None or field.dtype != field_type:
-                    schema_mismatch = True
-                    break
-
-            if not schema_mismatch:
-                embedding_field = actual.get("embedding")
-                dim = None
-                if embedding_field is not None:
-                    params = getattr(embedding_field, "params", {}) or {}
-                    dim = params.get("dim")
-                    if dim is None:
-                        dim = getattr(embedding_field, "dim", None)
-                if dim not in (None, EMBED_DIM):
-                    schema_mismatch = True
-
-            if schema_mismatch:
-                print(
-                    "⚠️  Existing collection schema is incompatible with the current "
-                    "Yo version. Recreating collection and dropping old data."
-                )
-                collection.release()
-                utility.drop_collection(name)
-            else:
-                return collection
+            return Collection(name)
 
         schema = CollectionSchema(
             fields=[
@@ -310,28 +219,19 @@ class YoBrain:
     # ------------------------------------------------------------------
     # Public operations
     # ------------------------------------------------------------------
-    def ingest(
-        self,
-        source: str,
-        namespace: str = "default",
-        loader: str | None = None,
-    ) -> None:
+    def ingest(self, source: str, namespace: str = "default") -> None:
         path = Path(source)
         if not path.exists():
             raise FileNotFoundError(f"Source path not found: {source}")
 
-        loader_choice = self._normalise_loader(loader)
-        documents = self._load_documents(path, loader_choice)
+        documents = self._load_documents(path)
         if not documents:
             print(f"⚠️  No ingestible documents found under {source}.")
             return
 
         splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
         chunks = splitter.split_documents(documents)
-        print(
-            f"🧩 Created {len(chunks)} chunks for namespace '{namespace}' "
-            f"using '{loader_choice}' loader."
-        )
+        print(f"🧩 Created {len(chunks)} chunks for namespace '{namespace}'.")
 
         collection = self._ensure_collection(namespace)
 
@@ -345,7 +245,6 @@ class YoBrain:
         collection.insert([ids, payloads, sources, embeddings])
         collection.flush()
         print("✅ Ingestion complete.")
-        self._maybe_auto_compact()
 
     def ask(self, question: str, namespace: str = "default", web: bool = False) -> str:
         if not question:
@@ -431,7 +330,7 @@ class YoBrain:
         else:
             print("ℹ️  Cache file not found.")
 
-    def compact(self, auto: bool = False) -> None:
+    def compact(self) -> None:
         if not self.db_path.exists():
             print("ℹ️  No database file to compact.")
             return
@@ -441,207 +340,25 @@ class YoBrain:
         conn.close()
         after = self.db_path.stat().st_size
         delta = before - after
-        message = (
-            f"Size reduced by {delta / (1024 ** 2):.2f} MiB "
-            f"({before / (1024 ** 2):.2f} → {after / (1024 ** 2):.2f} MiB)."
+        print(
+            f"VACUUM complete. Size reduced by {delta / (1024**2):.2f} MiB "
+            f"({before / (1024**2):.2f} → {after / (1024**2):.2f} MiB)."
         )
-        if auto:
-            print(f"✅ Auto-compaction complete. {message}")
-        else:
-            print(f"VACUUM complete. {message}")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _normalise_loader(self, loader: str | None) -> str:
-        if loader is None:
-            return "auto"
-
-        normalized = loader.strip().lower()
-        alias_map = {
-            "": "auto",
-            "default": "auto",
-            "md": "markdown",
-            "markdown": "markdown",
-            "pdf": "pdf",
-            "code": "code",
-            "py": "code",
-            "text": "text",
-            "txt": "text",
-            "auto": "auto",
-        }
-        normalized = alias_map.get(normalized, normalized)
-        if normalized not in SUPPORTED_LOADERS:
-            raise ValueError(
-                "Unsupported loader. Choose from auto, text, markdown, pdf, or code."
-            )
-        return normalized
-
-    def _load_documents(self, path: Path, loader: str) -> List:
+    def _load_documents(self, path: Path) -> List:
         if path.is_file():
-            target_loader = loader if loader != "auto" else self._infer_loader(path)
-            return self._load_file(path, target_loader)
-
-        documents: List = []
-        seen: set[Path] = set()
-        order: Sequence[str]
-        if loader == "auto":
-            order = ("markdown", "pdf", "code", "text")
-        else:
-            order = (loader,)
-
-        for choice in order:
-            for file_path in self._iter_files(path, choice):
-                if file_path in seen:
-                    continue
-                seen.add(file_path)
-                documents.extend(self._load_file(file_path, choice))
-        return documents
-
-    def _iter_files(self, base: Path, loader: str) -> Iterable[Path]:
-        if loader == "markdown":
-            extensions = {".md", ".markdown"}
-        elif loader == "pdf":
-            extensions = {".pdf"}
-        elif loader == "code":
-            extensions = CODE_EXTENSIONS
-        elif loader == "text":
-            extensions = {".txt", ".text", ".rst"}
-        else:
-            extensions = set()
-
-        for file_path in sorted(base.rglob("*")):
-            if not file_path.is_file():
-                continue
-            if not extensions or file_path.suffix.lower() in extensions:
-                yield file_path
-
-    def _infer_loader(self, path: Path) -> str:
-        suffix = path.suffix.lower()
-        if suffix in {".md", ".markdown"}:
-            return "markdown"
-        if suffix == ".pdf":
-            return "pdf"
-        if suffix in CODE_EXTENSIONS:
-            return "code"
-        return "text"
-
-    def _load_file(self, file_path: Path, loader: str) -> List:
-        if loader == "markdown":
-            return self._load_markdown(file_path)
-        if loader == "pdf":
-            return self._load_pdf(file_path)
-        if loader == "code":
-            return self._load_code(file_path)
-        return self._load_text(file_path)
-
-    def _load_text(self, file_path: Path) -> List:
-        loader = TextLoader(str(file_path), autodetect_encoding=True)
-        return loader.load()
-
-    def _load_markdown(self, file_path: Path) -> List:
-        if UnstructuredMarkdownLoader is None:
-            self._warn_once(
-                "markdown_fallback",
-                "Install unstructured[local-inference] for richer Markdown parsing. "
-                "Falling back to plain text.",
-            )
-            return self._load_text(file_path)
-
-        try:
-            loader = UnstructuredMarkdownLoader(str(file_path))
+            loader = TextLoader(str(path), autodetect_encoding=True)
             return loader.load()
-        except Exception as exc:  # pragma: no cover - loader failure fallback
-            self._warn_once(
-                "markdown_loader_error",
-                f"UnstructuredMarkdownLoader failed for {file_path.name}: {exc}. "
-                "Falling back to plain text.",
-            )
-            return self._load_text(file_path)
-
-    def _load_pdf(self, file_path: Path) -> List:
-        documents: List = []
-        if PyPDFLoader is None:
-            self._warn_once(
-                "pdf_loader_missing",
-                "Install langchain-community with PDF extras to enable PyPDFLoader. "
-                "Attempting OCR fallback.",
-            )
-        else:
-            try:
-                documents = PyPDFLoader(str(file_path)).load()
-            except Exception as exc:  # pragma: no cover - loader failure fallback
-                self._warn_once(
-                    "pdf_loader_error",
-                    f"PyPDFLoader failed for {file_path.name}: {exc}. Attempting OCR fallback.",
-                )
-                documents = []
-
-        if documents and any(doc.page_content.strip() for doc in documents):
-            return documents
-
-        if UnstructuredPDFLoader is None:
-            self._warn_once(
-                "pdf_ocr_missing",
-                "Install unstructured[local-inference] and pytesseract to OCR scanned PDFs.",
-            )
-            if documents:
-                return documents
-            return self._load_text(file_path)
-
-        loader_kwargs = {}
-        if import_util.find_spec("pytesseract") is not None:
-            loader_kwargs["strategy"] = "hi_res"
-        else:
-            self._warn_once(
-                "pdf_pytesseract_missing",
-                "Install pytesseract to enable high-resolution OCR for scanned PDFs.",
-            )
-
-        try:
-            ocr_documents = UnstructuredPDFLoader(str(file_path), **loader_kwargs).load()
-        except Exception as exc:  # pragma: no cover - loader failure fallback
-            self._warn_once(
-                "pdf_ocr_error",
-                f"OCR fallback failed for {file_path.name}: {exc}.",
-            )
-            return documents
-
-        return ocr_documents or documents
-
-    def _load_code(self, file_path: Path) -> List:
-        suffix = file_path.suffix.lower()
-        if suffix == ".py" and PythonLoader is not None:
-            try:
-                loader = PythonLoader(str(file_path))
-                return loader.load()
-            except Exception as exc:  # pragma: no cover - loader failure fallback
-                self._warn_once(
-                    "python_loader_error",
-                    f"PythonLoader failed for {file_path.name}: {exc}. Falling back to text.",
-                )
-        return self._load_text(file_path)
-
-    def _warn_once(self, key: str, message: str) -> None:
-        if self._loader_warnings.get(key):
-            return
-        print(f"⚠️  {message}")
-        self._loader_warnings[key] = True
-
-    def _maybe_auto_compact(self) -> None:
-        if self.auto_compact_threshold <= 0:
-            return
-        if not self.db_path.exists():
-            return
-        size = self.db_path.stat().st_size
-        if size < self.auto_compact_threshold:
-            return
-        threshold_mib = self.auto_compact_threshold / (1024 ** 2)
-        print(
-            f"🧽 Milvus Lite store is {size / (1024 ** 2):.2f} MiB (>{threshold_mib:.0f} MiB). "
-            "Running auto-compaction…"
+        loader = DirectoryLoader(
+            str(path),
+            glob="**/*.txt",
+            loader_cls=TextLoader,
+            loader_kwargs={"autodetect_encoding": True},
         )
-        self.compact(auto=True)
+        return loader.load()
 
     def _search_memory(self, coll_name: str, question: str) -> Tuple[str, List[str]]:
         if coll_name not in utility.list_collections():
