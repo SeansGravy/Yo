@@ -7,6 +7,33 @@ from importlib import metadata as importlib_metadata
 from importlib import util as import_util
 from shutil import which
 import subprocess
+import os
+from typing import Iterable, Sequence
+
+from yo.config import (
+    Config,
+    DEFAULT_EMBED_MODEL_SPEC,
+    DEFAULT_MODEL_SPEC,
+    get_config,
+    parse_model_spec,
+)
+from yo.logging_utils import get_logger
+
+LOGGER = get_logger(__name__)
+
+FALLBACK_PROVIDERS: Sequence[str] = ("ollama", "openai", "anthropic")
+DEFAULT_MODEL_MAP = {
+    "chat": {
+        "ollama": parse_model_spec(DEFAULT_MODEL_SPEC)[1],
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-haiku",
+    },
+    "embedding": {
+        "ollama": parse_model_spec(DEFAULT_EMBED_MODEL_SPEC)[1],
+        "openai": "text-embedding-3-small",
+        "anthropic": "claude-3-embed",
+    },
+}
 
 
 def _safe_version(dist: str) -> str | None:
@@ -34,7 +61,9 @@ class BackendSummary:
     """Aggregated status for the Milvus Lite and Ollama backends."""
 
     milvus: BackendStatus
+    # python bindings
     ollama_python: BackendStatus
+    # CLI executable
     ollama_cli: BackendStatus
 
 
@@ -106,3 +135,142 @@ def detect_backends() -> BackendSummary:
         ollama_python=ollama_python_status,
         ollama_cli=ollama_cli_status,
     )
+
+
+@dataclass(frozen=True)
+class ModelSelection:
+    """Result of running the centralised model selector."""
+
+    task_type: str
+    provider: str
+    model: str
+    spec: str
+    namespace: str | None
+    source: str
+    fallback: bool = False
+    reason: str | None = None
+
+
+def _provider_available(provider: str, task_type: str, backends: BackendSummary) -> bool:
+    provider = provider.lower()
+    if provider == "ollama":
+        return backends.ollama_python.available and backends.ollama_cli.available
+    if provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        return bool(api_key and _module_available("openai"))
+    if provider == "anthropic":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        return bool(api_key and _module_available("anthropic"))
+    return False
+
+
+def _fallback_candidates(preferred: str) -> Iterable[str]:
+    preferred = preferred.lower()
+    seen = set()
+    order = [preferred] + [p for p in FALLBACK_PROVIDERS if p != preferred]
+    for provider in order:
+        if provider not in seen:
+            seen.add(provider)
+            yield provider
+
+
+def _default_model_for(provider: str, task_type: str) -> str:
+    provider = provider.lower()
+    task = task_type.lower()
+    return DEFAULT_MODEL_MAP.get(task, {}).get(provider, "")
+
+
+def select_model(
+    task_type: str,
+    *,
+    namespace: str | None = None,
+    config: Config | None = None,
+    backends: BackendSummary | None = None,
+) -> ModelSelection:
+    """Select the most appropriate backend model for ``task_type``."""
+
+    if task_type not in {"chat", "embedding"}:
+        raise ValueError(f"Unsupported task type '{task_type}'.")
+
+    config = config or get_config(namespace=namespace)
+    backends = backends or detect_backends()
+
+    if task_type == "chat":
+        candidate_spec = config.model_spec
+        provider = config.model_provider
+        model = config.model_name
+        source = config.sources.get("model", "default")
+    else:
+        candidate_spec = config.embed_model_spec
+        provider = config.embed_provider
+        model = config.embed_name
+        source = config.sources.get("embed_model", "default")
+
+    if ":" not in candidate_spec and provider:
+        candidate_spec = f"{provider}:{model}"
+
+    chosen_provider = provider
+    chosen_model = model
+    chosen_spec = candidate_spec
+    resolved_namespace = namespace or config.namespace
+
+    if not _provider_available(provider, task_type, backends):
+        fallback_reason = f"{provider} provider unavailable"
+        for fallback_provider in _fallback_candidates(provider):
+            if not _provider_available(fallback_provider, task_type, backends):
+                continue
+            chosen_provider = fallback_provider
+            candidate_model = _default_model_for(fallback_provider, task_type)
+            if not candidate_model:
+                candidate_model = model
+            chosen_model = candidate_model or model
+            chosen_spec = f"{fallback_provider}:{chosen_model}"
+            source = f"fallback:{fallback_provider}"
+            LOGGER.info(
+                "Model selection fallback for %s (namespace=%s) → provider=%s model=%s (%s)",
+                task_type,
+                resolved_namespace,
+                chosen_provider,
+                chosen_model,
+                fallback_reason,
+            )
+            return ModelSelection(
+                task_type=task_type,
+                provider=chosen_provider,
+                model=chosen_model,
+                spec=chosen_spec,
+                namespace=resolved_namespace,
+                source=source,
+                fallback=True,
+                reason=fallback_reason,
+            )
+
+        raise RuntimeError(f"No available provider for {task_type} tasks (namespace={resolved_namespace}).")
+
+    LOGGER.info(
+        "Model selection for %s (namespace=%s) → provider=%s model=%s source=%s",
+        task_type,
+        resolved_namespace,
+        chosen_provider,
+        chosen_model,
+        source,
+    )
+    return ModelSelection(
+        task_type=task_type,
+        provider=chosen_provider,
+        model=chosen_model,
+        spec=chosen_spec,
+        namespace=resolved_namespace,
+        source=source,
+        fallback=False,
+        reason=None,
+    )
+
+
+__all__ = [
+    "BackendStatus",
+    "BackendSummary",
+    "ModelSelection",
+    "detect_backends",
+    "select_model",
+]

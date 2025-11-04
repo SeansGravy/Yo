@@ -70,6 +70,20 @@ python3 -m yo.cli ns delete --ns research
 
 Namespaces map to Milvus collections (`yo_<name>`).
 
+### Configure defaults
+
+```bash
+python3 -m yo.cli config view
+python3 -m yo.cli config set model ollama:llama3
+python3 -m yo.cli config set model openai:gpt-4o --ns research
+python3 -m yo.cli config reset model --ns research
+```
+
+* `yo config view` surfaces the merged configuration after layering CLI overrides, environment variables, `.env`, and namespace metadata.
+* `yo config set` persists global defaults to `.env`; include `--ns` to store per-namespace model or embedding preferences inside `data/namespace_meta.json`.
+* `yo config reset` clears overrides globally or for a specific namespace.
+* Copy `.env.example` to `.env` and tweak `YO_MODEL`, `YO_EMBED_MODEL`, `YO_NAMESPACE`, `YO_DB_URI`, or `YO_DATA_DIR` for project-wide defaults.
+
 ### Work with the web cache
 
 ```bash
@@ -113,6 +127,12 @@ of failing outright.
 | `data/web_cache.json` | Cached DuckDuckGo snippets (24h TTL) |
 | `docs/` | Default location for source `.txt` files |
 
+## ⚙️ Unified configuration & model selection
+
+- `yo/config.py` loads configuration from CLI overrides, environment variables, `.env`, and namespace metadata. The resulting `Config` dataclass is consumed by the CLI, YoBrain, and the Lite UI to keep defaults in sync.
+- `yo/backends.select_model()` resolves both generation and embedding providers (Ollama, OpenAI, Anthropic) with structured logging. When cloud APIs are unavailable it automatically falls back to the local Ollama models so ingestion and Q&A continue uninterrupted.
+- Use `python3 -m yo.cli config view|set|reset` to inspect or update configuration without editing files manually. Per-namespace overrides live inside `data/namespace_meta.json` alongside ingestion metrics.
+
 ## 🛠️ Troubleshooting
 
 * **Database locked** – Yo automatically renames the locked file into `data/recoveries/` and recreates a fresh database.
@@ -128,8 +148,10 @@ of failing outright.
 Phase 1.5 introduces the first interactive Lite UI. Launch the FastAPI app from `yo/webui.py` to explore it locally:
 
 ```bash
-uvicorn yo.webui:app --reload
+python3 -m yo.webui
 ```
+
+This entry point wraps Uvicorn with a WatchFiles reloader (1.5 s debounce) that ignores `tests/test_memory.py`, keeping reloads stable during rapid test/edit cycles. If WatchFiles is unavailable it gracefully falls back to a single-shot Uvicorn run.
 
 Visit [http://localhost:8000/ui](http://localhost:8000/ui) for a dashboard that now includes:
 

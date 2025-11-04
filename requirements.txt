@@ -1,10 +1,13 @@
 # --- Core framework ---
-setuptools>=81
+setuptools>=80
 fastapi
 Jinja2>=3.1
 uvicorn[standard]
+watchfiles
 python-dotenv
 requests
+pytest
+pytest-asyncio
 
 # --- LangChain stack ---
 langchain

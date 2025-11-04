@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import yo.brain as brain_module
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
+from yo.logging_utils import get_logger
 from yo.sample_files import write_sample_xlsx
 
 
@@ -25,7 +26,30 @@ class StubLoader:
 
 
 def _blank_brain() -> YoBrain:
-    return object.__new__(YoBrain)  # type: ignore[return-value]
+    brain = object.__new__(YoBrain)  # type: ignore[call-arg, return-value]
+    brain._logger = get_logger("yo.tests")  # type: ignore[attr-defined]
+    brain.data_dir = Path(".")  # type: ignore[attr-defined]
+    brain.cache_path = Path("web_cache_test.json")  # type: ignore[attr-defined]
+    brain.meta_path = Path("namespace_meta_test.json")  # type: ignore[attr-defined]
+    brain.state_path = Path("namespace_state_test.json")  # type: ignore[attr-defined]
+    brain.active_namespace = "default"  # type: ignore[attr-defined]
+    brain.model_selection = SimpleNamespace(spec="ollama:llama3", provider="ollama", model="llama3")  # type: ignore[attr-defined]
+    brain.embedding_selection = SimpleNamespace(
+        spec="ollama:nomic-embed-text",
+        provider="ollama",
+        model="nomic-embed-text",
+    )  # type: ignore[attr-defined]
+    brain.model_provider = "ollama"  # type: ignore[attr-defined]
+    brain.embed_provider = "ollama"  # type: ignore[attr-defined]
+    brain.model_name = "llama3"  # type: ignore[attr-defined]
+    brain.embed_model = "nomic-embed-text"  # type: ignore[attr-defined]
+    brain.config = SimpleNamespace(
+        namespace="default",
+        model_spec="ollama:llama3",
+        embed_model_spec="ollama:nomic-embed-text",
+        data_dir=Path("."),
+    )  # type: ignore[attr-defined]
+    return brain
 
 
 def test_load_pdf_documents_uses_pdf_loader(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

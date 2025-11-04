@@ -84,8 +84,20 @@ def write_sample_xlsx(path: Path, overwrite: bool = False) -> Path:
     """Write the sample XLSX to ``path`` if it doesn't already exist."""
     if path.exists() and not overwrite:
         return path
-    data = base64.b64decode(SAMPLE_XLSX_BASE64)
-    path.write_bytes(data)
+    try:
+        from openpyxl import Workbook  # type: ignore
+    except ImportError:
+        data = base64.b64decode(SAMPLE_XLSX_BASE64)
+        path.write_bytes(data)
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "YoData"
+        ws.append(["Topic", "Summary"])
+        ws.append(["LangChain", "Composable RAG workflows."])
+        ws.append(["Milvus Lite", "Embedded vector store for local recall."])
+        ws.append(["Yo", "Your local-second-brain CLI."])
+        wb.save(path)
     return path
 
 

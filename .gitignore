@@ -1,5 +1,11 @@
-__pycache__/\n.env\n*.log\n__generated__/
+__pycache__/
+.env
+*.log
+__generated__/
 
 # Generated sample ingestion files
 fixtures/ingest/brochure.pdf
 fixtures/ingest/sample.xlsx
+
+.pytest_cache/
+.coverage

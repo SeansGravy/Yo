@@ -16,6 +16,10 @@ from importlib import util as import_util
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, NoReturn
 
+from yo.logging_utils import get_logger
+from yo.config import Config as YoConfig, get_config
+from yo.backends import select_model
+
 try:  # pragma: no cover - dependency presence is validated in tests
     import chardet
 except ImportError:  # pragma: no cover - handled dynamically
@@ -111,20 +115,45 @@ class YoBrain:
 
     def __init__(
         self,
-        data_dir: Path | str = "data",
-        model_name: str = "llama3",
-        embed_model: str = "nomic-embed-text",
+        data_dir: Path | str | None = None,
+        model_name: str | None = None,
+        embed_model: str | None = None,
+        namespace: str | None = None,
+        *,
+        config: YoConfig | None = None,
     ) -> None:
-        self.data_dir = Path(data_dir)
+        self._logger = get_logger(__name__)
+
+        cli_overrides: Dict[str, Any] = {}
+        if data_dir:
+            cli_overrides["data_dir"] = str(data_dir)
+        if namespace:
+            cli_overrides["namespace"] = namespace
+        if model_name:
+            cli_overrides["model"] = model_name
+        if embed_model:
+            cli_overrides["embed_model"] = embed_model
+
+        if config is None:
+            config = get_config(cli_args=cli_overrides or None, namespace=namespace)
+        elif cli_overrides:
+            merged = cli_overrides.copy()
+            merged.setdefault("namespace", config.namespace)
+            config = get_config(cli_args=merged, namespace=config.namespace)
+
+        self.config = config
+        self.data_dir = config.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.data_dir / "milvus_lite.db"
         self.recover_dir = self.data_dir / "recoveries"
         self.recover_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_path = self.data_dir / "web_cache.json"
         self.meta_path = self.data_dir / "namespace_meta.json"
+        self.state_path = self.data_dir / "namespace_state.json"
 
-        self.model_name = model_name
-        self.embed_model = embed_model
+        self.db_path = self._resolve_db_path(config.db_uri)
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except FileNotFoundError:
+            pass
 
         if not OLLAMA_AVAILABLE:
             raise RuntimeError(
@@ -139,10 +168,69 @@ class YoBrain:
                 "Milvus Lite dependencies missing. Install `pymilvus` (and `milvus-lite`) before using Yo."
             )
 
+        self._connect_milvus()
+
+        preferred_namespace = self.config.namespace
+        resolved_namespace = self._load_active_namespace(preferred=preferred_namespace)
+        if resolved_namespace != self.config.namespace:
+            self.config = get_config(
+                cli_args={
+                    "namespace": resolved_namespace,
+                    "data_dir": str(self.data_dir),
+                }
+            )
+
+        self.active_namespace = resolved_namespace
+        self.cache_path = self._cache_path_for(self.active_namespace)
+
+        self._initialise_models()
+
+        self._logger.info(
+            "YoBrain ready (namespace=%s, provider=%s, model=%s, db=%s)",
+            self.active_namespace,
+            self.model_provider,
+            self.model_name,
+            self.db_path,
+        )
+
+    def _resolve_db_path(self, uri: str) -> Path:
+        if not uri:
+            return (self.data_dir / "milvus_lite.db").resolve()
+        cleaned = uri.strip()
+        if cleaned.startswith("sqlite:///"):
+            cleaned = cleaned[len("sqlite:///") :]
+        path = Path(cleaned)
+        if path.is_absolute():
+            return path
+        return path.resolve()
+
+    def _initialise_models(self) -> None:
+        chat_selection = select_model(
+            "chat",
+            namespace=self.active_namespace,
+            config=self.config,
+        )
+        embed_selection = select_model(
+            "embedding",
+            namespace=self.active_namespace,
+            config=self.config,
+        )
+
+        self.model_selection = chat_selection
+        self.embedding_selection = embed_selection
+        self.model_provider = chat_selection.provider
+        self.embed_provider = embed_selection.provider
+
+        if self.model_provider != "ollama" or self.embed_provider != "ollama":
+            raise RuntimeError(
+                "Only the Ollama provider is currently supported by YoBrain."
+            )
+
+        self.model_name = chat_selection.model
+        self.embed_model = embed_selection.model
+
         self.client = Client()  # type: ignore[operator]
         self.embeddings = OllamaEmbeddings(model=self.embed_model)  # type: ignore[operator]
-
-        self._connect_milvus()
 
     # ------------------------------------------------------------------
     # Milvus helpers
@@ -188,6 +276,69 @@ class YoBrain:
     @staticmethod
     def _collection_name(namespace: str) -> str:
         return f"yo_{namespace}"
+
+    def _cache_path_for(self, namespace: str) -> Path:
+        if namespace == "default":
+            return self.data_dir / "web_cache.json"
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", namespace)
+        return self.data_dir / f"web_cache_{safe}.json"
+
+    def _load_namespace_state(self) -> Dict[str, Any]:
+        if not self.state_path.exists():
+            return {}
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as fh:
+                raw_state = json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            return {}
+        if isinstance(raw_state, dict):
+            return raw_state
+        return {}
+
+    def _save_namespace_state(self, state: Dict[str, Any]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.state_path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+
+    def _load_active_namespace(self, preferred: str | None = None) -> str:
+        state = self._load_namespace_state()
+        candidates: List[str] = []
+        if preferred:
+            candidates.append(preferred)
+        stored = str(state.get("active", "") or "").strip()
+        if stored:
+            candidates.append(stored)
+        candidates.extend(["default", "Default", "" ])
+
+        try:
+            available = self.ns_list(silent=True)
+        except Exception:
+            available = []
+
+        for candidate in candidates:
+            candidate = str(candidate or "default").strip() or "default"
+            if not available:
+                return candidate
+            if candidate in available:
+                return candidate
+
+        return available[0] if available else "default"
+
+    def _set_active_namespace(self, namespace: str) -> None:
+        state = self._load_namespace_state()
+        state["active"] = namespace
+        self._save_namespace_state(state)
+
+        self.active_namespace = namespace
+        self.cache_path = self._cache_path_for(namespace)
+        self.config = get_config(
+            cli_args={
+                "namespace": namespace,
+                "data_dir": str(self.data_dir),
+            }
+        )
+        self._initialise_models()
+        self._logger.info("Active namespace switched to %s", namespace)
 
     def _ensure_collection(self, namespace: str) -> Collection:
         name = self._collection_name(namespace)
@@ -238,7 +389,7 @@ class YoBrain:
             with open(self.cache_path, "r", encoding="utf-8") as fh:
                 cache = json.load(fh)
         except (json.JSONDecodeError, OSError):
-            print("⚠️  Cache file was corrupted. Resetting web cache.")
+            self._logger.warning("⚠️  Cache file was corrupted. Resetting web cache (%s).", self.cache_path)
             try:
                 self.cache_path.unlink()
             except FileNotFoundError:
@@ -291,6 +442,9 @@ class YoBrain:
         meta = self._load_namespace_meta()
         entry = meta.setdefault(namespace, {})
         entry["last_ingested"] = datetime.now().isoformat()
+        config_block = entry.setdefault("config", {})
+        config_block["model"] = getattr(self, "model_selection", None).spec if getattr(self, "model_selection", None) else self.config.model_spec
+        config_block["embed_model"] = getattr(self, "embedding_selection", None).spec if getattr(self, "embedding_selection", None) else self.config.embed_model_spec
         if documents is not None:
             existing = int(entry.get("documents", 0) or 0)
             entry["documents"] = existing + int(documents)
@@ -298,6 +452,25 @@ class YoBrain:
             existing_chunks = int(entry.get("chunks", 0) or 0)
             entry["chunks"] = existing_chunks + int(chunks)
         self._save_namespace_meta(meta)
+
+    def _rollback_insert(self, collection: Collection, ids: List[int]) -> None:
+        if not ids:
+            return
+        expr = "id in [" + ", ".join(str(idx) for idx in ids) + "]"
+        try:
+            collection.delete(expr=expr)
+            collection.flush()
+            self._logger.warning(
+                "↩️  Rolled back %s partial records from %s",
+                len(ids),
+                getattr(collection, "name", "<unknown>"),
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self._logger.error(
+                "Rollback failed for %s: %s",
+                getattr(collection, "name", "<unknown>"),
+                exc,
+            )
 
     def _cache_fresh(self, entry: dict) -> bool:
         if not entry:
@@ -360,40 +533,112 @@ class YoBrain:
     # Public operations
     # ------------------------------------------------------------------
     def ingest(self, source: str, namespace: str = "default") -> dict[str, Any] | None:
+        namespace = (namespace or "default").strip() or "default"
+        start = time.perf_counter()
         path = Path(source)
         if not path.exists():
+            self._logger.error(
+                "⚠️  Ingestion aborted — source path not found (namespace=%s, source=%s)",
+                namespace,
+                source,
+            )
             raise FileNotFoundError(f"Source path not found: {source}")
 
-        documents = self._load_documents(path)
-        if not documents:
-            print(f"⚠️  No ingestible documents found under {source}.")
-            return
+        self._logger.info(
+            "🚚 Ingestion requested (namespace=%s, source=%s)",
+            namespace,
+            source,
+        )
+        try:
+            documents = self._load_documents(path)
+        except (MissingDependencyError, IngestionError):
+            raise
+        except Exception as exc:
+            self._logger.exception(
+                "⚠️  Failed to load documents (namespace=%s, source=%s)",
+                namespace,
+                source,
+            )
+            raise IngestionError(f"Failed to load documents from {source}: {exc}") from exc
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
-        chunks = splitter.split_documents(documents)
-        print(f"🧩 Created {len(chunks)} chunks for namespace '{namespace}'.")
+        if not documents:
+            self._logger.warning(
+                "⚠️  No ingestible documents found (namespace=%s, source=%s)",
+                namespace,
+                source,
+            )
+            return None
+
+        try:
+            splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
+            chunks = splitter.split_documents(documents)
+        except Exception as exc:
+            self._logger.exception(
+                "⚠️  Chunk generation failed (namespace=%s, documents=%s)",
+                namespace,
+                len(documents),
+            )
+            raise IngestionError("Failed to split documents for ingestion.") from exc
+
+        self._logger.info(
+            "🧩 Created %s chunks (namespace=%s, documents=%s)",
+            len(chunks),
+            namespace,
+            len(documents),
+        )
 
         collection = self._ensure_collection(namespace)
 
         payloads = [chunk.page_content for chunk in chunks]
         sources = [str(chunk.metadata.get("source", "")) for chunk in chunks]
-        embeddings = self.embeddings.embed_documents(payloads)
+        try:
+            embeddings = self.embeddings.embed_documents(payloads)
+        except Exception as exc:
+            self._logger.exception(
+                "⚠️  Embedding generation failed (namespace=%s, records=%s)",
+                namespace,
+                len(payloads),
+            )
+            raise IngestionError(
+                "Failed to generate embeddings. Ensure the Ollama runtime is healthy."
+            ) from exc
 
         base_id = int(time.time() * 1000)
         ids = [base_id + idx for idx in range(len(chunks))]
 
-        collection.insert([ids, payloads, sources, embeddings])
-        collection.flush()
-        print("✅ Ingestion complete.")
+        try:
+            collection.insert([ids, payloads, sources, embeddings])
+            collection.flush()
+        except Exception as exc:
+            self._logger.exception(
+                "⚠️  Milvus insert failed (namespace=%s, records=%s)",
+                namespace,
+                len(ids),
+            )
+            self._rollback_insert(collection, ids)
+            raise IngestionError(
+                f"Failed to persist chunks into namespace '{namespace}'. "
+                "Check Milvus Lite configuration and retry."
+            ) from exc
+
+        duration = time.perf_counter() - start
         summary = {
             "namespace": namespace,
             "documents_ingested": len(documents),
             "chunks_ingested": len(chunks),
+            "duration_seconds": round(duration, 3),
         }
         self._update_namespace_meta(
             namespace,
             documents=len(documents),
             chunks=len(chunks),
+        )
+        self._logger.info(
+            "✅ Ingestion complete (namespace=%s, documents=%s, chunks=%s, duration=%.3fs)",
+            namespace,
+            len(documents),
+            len(chunks),
+            duration,
         )
         return summary
 
@@ -456,10 +701,12 @@ class YoBrain:
         if silent:
             return sorted_names
 
+        active = getattr(self, "active_namespace", "default")
         if sorted_names:
             print("🗂️  Available namespaces:")
             for ns in sorted_names:
-                print(f" - {ns}")
+                marker = " (active)" if ns == active else ""
+                print(f" - {ns}{marker}")
         else:
             print("(no namespaces found)")
 
@@ -479,15 +726,36 @@ class YoBrain:
             activity[ns] = stats
         return activity
 
-    def ns_delete(self, namespace: str) -> None:
+    def ns_switch(self, namespace: str) -> str:
+        coll_name = self._collection_name(namespace)
+        if coll_name not in utility.list_collections():
+            raise ValueError(f"Namespace '{namespace}' does not exist.")
+        self._set_active_namespace(namespace)
+        self._logger.info("🧭 Active namespace switched to %s", namespace)
+        return namespace
+
+    def ns_purge(self, namespace: str) -> None:
         coll_name = self._collection_name(namespace)
         if coll_name not in utility.list_collections():
             raise ValueError(f"Namespace '{namespace}' does not exist.")
         utility.drop_collection(coll_name)
-        print(f"🗑️  Deleted namespace '{namespace}'.")
+        self._logger.info("🗑️  Deleted namespace '%s'.", namespace)
         meta = self._load_namespace_meta()
         if meta.pop(namespace, None) is not None:
             self._save_namespace_meta(meta)
+
+        if getattr(self, "active_namespace", "default") == namespace:
+            remaining = [ns for ns in self.ns_list(silent=True) if ns != namespace]
+            if "default" in remaining:
+                fallback = "default"
+            elif remaining:
+                fallback = remaining[0]
+            else:
+                fallback = "default"
+            self._set_active_namespace(fallback)
+
+    def ns_delete(self, namespace: str) -> None:
+        self.ns_purge(namespace)
 
     def _list_cache(self) -> None:
         cache = self._load_cache()
@@ -683,7 +951,7 @@ class YoBrain:
 
         if documents:
             for warning in errors:
-                print(f"⚠️  Skipped {warning}")
+                self._logger.warning("⚠️  Skipped %s", warning)
             return documents
 
         if errors:
@@ -728,4 +996,3 @@ class YoBrain:
         )
         response = self.client.generate(model=self.model_name, prompt=prompt)
         return response["response"]
-

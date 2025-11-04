@@ -1,0 +1,38 @@
+{
+  "default": {
+    "last_ingested": "2025-11-04T17:24:11.164161",
+    "config": {
+      "model": "ollama:llama3",
+      "embed_model": "ollama:nomic-embed-text"
+    },
+    "documents": 30,
+    "chunks": 414
+  },
+  "test": {
+    "last_ingested": "2025-11-04T17:23:37.074811",
+    "config": {
+      "model": "ollama:llama3",
+      "embed_model": "ollama:nomic-embed-text"
+    },
+    "documents": 15,
+    "chunks": 207
+  },
+  "ingest_pdf": {
+    "last_ingested": "2025-11-04T17:01:27.816902",
+    "config": {
+      "model": "ollama:llama3",
+      "embed_model": "ollama:nomic-embed-text"
+    },
+    "documents": 2,
+    "chunks": 2
+  },
+  "ingest_xlsx": {
+    "last_ingested": "2025-11-04T17:01:33.740891",
+    "config": {
+      "model": "ollama:llama3",
+      "embed_model": "ollama:nomic-embed-text"
+    },
+    "documents": 1,
+    "chunks": 1
+  }
+}

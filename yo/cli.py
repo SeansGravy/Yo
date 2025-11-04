@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -18,9 +19,31 @@ from packaging.version import InvalidVersion, Version
 
 from yo.backends import detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
+from yo.config import get_config, reset_config, serialize_config, update_config_value
 
 
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
+
+CONFIG_MUTABLE_KEYS: tuple[str, ...] = (
+    "namespace",
+    "model",
+    "embed_model",
+    "db_uri",
+)
+
+
+def _active_namespace_default() -> str:
+    try:
+        return get_config().namespace
+    except Exception:
+        return "default"
+
+
+def _resolve_namespace_arg(args: argparse.Namespace) -> str:
+    name = getattr(args, "name", None) or getattr(args, "ns", None)
+    if not name:
+        raise ValueError("Namespace name is required.")
+    return str(name)
 
 
 def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -325,9 +348,16 @@ def _handle_ns_list(_: argparse.Namespace, brain: YoBrain | None) -> None:
     brain.ns_list()
 
 
-def _handle_ns_delete(args: argparse.Namespace, brain: YoBrain | None) -> None:
+def _handle_ns_switch(args: argparse.Namespace, brain: YoBrain | None) -> None:
     assert brain is not None
-    brain.ns_delete(args.ns)
+    target = _resolve_namespace_arg(args)
+    brain.ns_switch(target)
+
+
+def _handle_ns_purge(args: argparse.Namespace, brain: YoBrain | None) -> None:
+    assert brain is not None
+    target = _resolve_namespace_arg(args)
+    brain.ns_purge(target)
 
 
 def _handle_cache_list(_: argparse.Namespace, brain: YoBrain | None) -> None:
@@ -345,11 +375,47 @@ def _handle_compact(_: argparse.Namespace, brain: YoBrain | None) -> None:
     brain.compact()
 
 
+def _handle_config_view(args: argparse.Namespace, _: YoBrain | None = None) -> None:
+    cli_args = {}
+    if getattr(args, "ns", None):
+        cli_args["namespace"] = args.ns
+    config = get_config(cli_args=cli_args or None)
+    print(json.dumps(serialize_config(config), indent=2))
+
+
+def _handle_config_set(args: argparse.Namespace, _: YoBrain | None = None) -> None:
+    try:
+        update_config_value(
+            args.key,
+            args.value,
+            namespace=getattr(args, "ns", None),
+            data_dir=get_config().data_dir,
+        )
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1) from exc
+    target = f"namespace '{args.ns}'" if getattr(args, "ns", None) else "global config"
+    print(f"✅ Updated {target}: {args.key} → {args.value}")
+
+
+def _handle_config_reset(args: argparse.Namespace, _: YoBrain | None = None) -> None:
+    keys = [args.key] if args.key else None
+    reset_config(
+        keys,
+        namespace=getattr(args, "ns", None),
+        data_dir=get_config().data_dir,
+    )
+    scope = f"namespace '{args.ns}'" if getattr(args, "ns", None) else "global config"
+    detail = args.key if args.key else "all configurable keys"
+    print(f"✅ Reset {detail} for {scope}.")
+
+
 def _add_ns_options(parser: argparse.ArgumentParser) -> None:
+    default_ns = _active_namespace_default()
     parser.add_argument(
         "--ns",
-        default="default",
-        help="Namespace to target (default: default)",
+        default=default_ns,
+        help=f"Namespace to target (default: {default_ns})",
     )
 
 
@@ -372,15 +438,48 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ns_options(summarize_parser)
     summarize_parser.set_defaults(handler=_handle_summarize)
 
-    ns_parser = subparsers.add_parser("ns", help="Namespace management")
-    ns_sub = ns_parser.add_subparsers(dest="ns_command", required=True)
+    namespace_parser = subparsers.add_parser(
+        "namespace",
+        help="Namespace management",
+        aliases=["ns"],
+    )
+    ns_sub = namespace_parser.add_subparsers(dest="namespace_command", required=True)
 
     ns_list_parser = ns_sub.add_parser("list", help="List namespaces")
     ns_list_parser.set_defaults(handler=_handle_ns_list)
 
-    ns_delete_parser = ns_sub.add_parser("delete", help="Delete a namespace")
-    _add_ns_options(ns_delete_parser)
-    ns_delete_parser.set_defaults(handler=_handle_ns_delete)
+    ns_switch_parser = ns_sub.add_parser("switch", help="Switch the active namespace")
+    ns_switch_parser.add_argument("name", nargs="?", help="Namespace to activate")
+    ns_switch_parser.add_argument("--ns", dest="name", help=argparse.SUPPRESS)
+    ns_switch_parser.set_defaults(handler=_handle_ns_switch)
+
+    ns_purge_parser = ns_sub.add_parser("purge", help="Delete a namespace and its data")
+    ns_purge_parser.add_argument("name", nargs="?", help="Namespace to purge")
+    ns_purge_parser.add_argument("--ns", dest="name", help=argparse.SUPPRESS)
+    ns_purge_parser.set_defaults(handler=_handle_ns_purge)
+
+    ns_delete_parser = ns_sub.add_parser("delete", help=argparse.SUPPRESS)
+    ns_delete_parser.add_argument("name", nargs="?", help=argparse.SUPPRESS)
+    ns_delete_parser.add_argument("--ns", dest="name", help=argparse.SUPPRESS)
+    ns_delete_parser.set_defaults(handler=_handle_ns_purge)
+
+    config_parser = subparsers.add_parser("config", help="Configuration management")
+    config_sub = config_parser.add_subparsers(dest="config_command", required=True)
+
+    config_view = config_sub.add_parser("view", help="Display the merged configuration")
+    config_view.add_argument("--ns", help="Namespace to focus on")
+    config_view.set_defaults(handler=_handle_config_view)
+
+    config_set = config_sub.add_parser("set", help="Set a configuration value")
+    config_set.add_argument("key", choices=CONFIG_MUTABLE_KEYS, help="Configuration key to update")
+    config_set.add_argument("value", help="Value to assign")
+    config_set.add_argument("--ns", help="Namespace override (optional)")
+    config_set.set_defaults(handler=_handle_config_set)
+
+    config_reset = config_sub.add_parser("reset", help="Reset configuration values")
+    config_reset.add_argument("key", nargs="?", choices=CONFIG_MUTABLE_KEYS, help="Specific key to reset")
+    config_reset.add_argument("--ns", help="Namespace override (optional)")
+    config_reset.set_defaults(handler=_handle_config_reset)
 
     cache_parser = subparsers.add_parser("cache", help="Web cache utilities")
     cache_sub = cache_parser.add_subparsers(dest="cache_command", required=True)
@@ -412,8 +511,9 @@ def main() -> None:
         parser.error("No command provided")
 
     brain: YoBrain | None = None
-    if args.command not in {"verify", "doctor"}:
-        brain = YoBrain()
+    if args.command not in {"verify", "doctor", "config"}:
+        ns_override = getattr(args, "ns", None)
+        brain = YoBrain(namespace=ns_override)
 
     try:
         handler(args, brain)
@@ -424,4 +524,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

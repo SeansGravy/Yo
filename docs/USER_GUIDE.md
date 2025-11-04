@@ -51,10 +51,12 @@ ollama pull nomic-embed-text   # embedding model
 
 ```
 Yo/
-├── data/                  # Milvus Lite SQLite store + web cache
+├── data/                  # Milvus Lite SQLite store, namespace state, and logs
 │   ├── milvus_lite.db     # main database (auto-created)
 │   ├── recoveries/        # locked DB backups (auto-rotated)
-│   └── web_cache.json     # cached DuckDuckGo snippets (24h TTL)
+│   ├── logs/              # structured log output (yo.log with rotation)
+│   ├── namespace_state.json  # active namespace persisted for CLI defaults
+│   └── web_cache*.json    # per-namespace cached DuckDuckGo snippets (24h TTL)
 ├── docs/
 │   ├── README.md          # developer overview and architecture
 │   ├── USER_GUIDE.md      # this guide
@@ -111,6 +113,7 @@ python3 -m yo.cli add fixtures/ingest/example.py --ns code
 * PDF ingestion requires `unstructured[local-inference]`, `pdfminer.six`, and `chardet>=5.2`. Install `pytesseract` plus the Tesseract binary for OCR of scanned pages.
 * XLSX ingestion requires `openpyxl` alongside `chardet>=5.2`.
 * When dependencies are missing or a format is unsupported, the CLI and Lite UI now return clear error messages instead of aborting the entire run.
+* Detailed ingestion diagnostics (chunk counts, durations, and tracebacks) are written to `data/logs/yo.log` so you can audit long-running imports.
 
 ### 4.2 `ask` — Query the knowledge base
 
@@ -132,17 +135,33 @@ python3 -m yo.cli summarize --ns research
 * Loads up to 500 stored chunks and asks the LLM for a narrative summary.
 * Errors if the namespace is empty or missing.
 
-### 4.4 `ns` — Manage namespaces
+### 4.4 `namespace` — Manage namespaces
 
 ```bash
-python3 -m yo.cli ns list
-python3 -m yo.cli ns delete --ns scratch
+python3 -m yo.cli namespace list            # alias: `yo ns list`
+python3 -m yo.cli namespace switch research
+python3 -m yo.cli namespace purge scratch
 ```
 
-* `list` shows all namespaces currently available.
-* `delete` drops the specified namespace and its data after confirmation.
+* `list` highlights every namespace and marks the active namespace that other commands target by default.
+* `switch <name>` updates the active namespace, persisting the choice to `data/namespace_state.json` and pointing the local web cache at a namespace-specific file.
+* `purge <name>` drops the Milvus collection, prunes namespace metadata, and automatically falls back to a safe active namespace.
 
-### 4.5 `cache` — Inspect or clear web cache
+### 4.5 `config` — Manage defaults
+
+```bash
+python3 -m yo.cli config view
+python3 -m yo.cli config set model ollama:llama3
+python3 -m yo.cli config set embed_model ollama:nomic-embed-text --ns research
+python3 -m yo.cli config reset --ns research
+```
+
+* `view` prints the merged configuration for the active (or specified) namespace, showing the precedence of CLI overrides, `.env`, environment variables, and namespace metadata.
+* `set <key> <value>` persists a change. Without `--ns` the setting is stored in `.env`. With `--ns` the override is written to `data/namespace_meta.json` beside ingestion metrics.
+* `reset [key]` removes overrides globally or for a namespace so YoBrain falls back to defaults (`ollama:llama3` and `ollama:nomic-embed-text`).
+* `.env.example` lists recognised variables (`YO_MODEL`, `YO_EMBED_MODEL`, `YO_NAMESPACE`, `YO_DB_URI`, `YO_DATA_DIR`, and optional cloud API keys). Copy it to `.env` to pin local defaults.
+
+### 4.6 `cache` — Inspect or clear web cache
 
 ```bash
 python3 -m yo.cli cache list
@@ -152,7 +171,7 @@ python3 -m yo.cli cache clear
 * `list` prints cached queries with timestamps.
 * `clear` removes `data/web_cache.json` if it exists.
 
-### 4.6 `compact` — Vacuum the database
+### 4.7 `compact` — Vacuum the database
 
 ```bash
 python3 -m yo.cli compact
@@ -162,7 +181,7 @@ python3 -m yo.cli compact
 * Prints the size delta (MiB before/after).
 * Yo automatically triggers compaction when the database grows beyond ~100 MiB after ingestion.
 
-### 4.7 `doctor` — Diagnose local setup issues
+### 4.8 `doctor` — Diagnose local setup issues
 
 ```bash
 python3 -m yo.cli doctor
@@ -173,7 +192,7 @@ python3 -m yo.cli doctor
 * Reports whether the Milvus Lite runtime can be imported so vector-store operations don’t fail later.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
-### 4.8 `verify` — Run the regression suite
+### 4.9 `verify` — Run the regression suite
 
 ```bash
 python3 -m yo.cli verify
@@ -214,11 +233,13 @@ python3 -m yo.cli compact
 
 ## 6. Lite Web UI Preview
 
-The Lite UI now ships with a FastAPI app in `yo/webui.py`. Launch it with Uvicorn to open the dashboard:
+The Lite UI now ships with a FastAPI app in `yo/webui.py`. Launch it with the bundled reload supervisor:
 
 ```bash
-uvicorn yo.webui:app --reload
+python3 -m yo.webui
 ```
+
+The wrapper runs Uvicorn behind a WatchFiles reloader (1.5 s debounce) that ignores transient edits to `tests/test_memory.py`, preventing runaway restart loops during test runs. If WatchFiles is unavailable, the command falls back to a standard Uvicorn server.
 
 Open [http://localhost:8000/ui](http://localhost:8000/ui) to:
 
