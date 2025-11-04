@@ -34,7 +34,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> The requirements file installs `langchain-ollama>=0.1.0`, `milvus-lite>=2.4.4`, and pins `setuptools>=81`, eliminating the lingering `pkg_resources` deprecation warnings seen in earlier releases.
+> The requirements file installs `langchain-ollama>=0.1.0`, `milvus-lite>=2.4.4`, and pins `setuptools>=81` so the Milvus Lite backend stays compatible out of the box.
 
 > **OCR note:** For scanned PDFs, install the Tesseract binary (`brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu) so `pytesseract` can extract text during ingestion.
 
@@ -55,7 +55,11 @@ Yo/
 │   ├── milvus_lite.db     # main database (auto-created)
 │   ├── recoveries/        # locked DB backups (auto-rotated)
 │   └── web_cache.json     # cached DuckDuckGo snippets (24h TTL)
-├── docs/                  # drop your `.txt` source files here (optional)
+├── docs/
+│   ├── README.md          # developer overview and architecture
+│   ├── USER_GUIDE.md      # this guide
+│   ├── ROADMAP.md         # upcoming phases and milestones
+│   └── Yo_Handoff_Report.md   # current project context & release history
 ├── fixtures/ingest/       # sample Markdown, PDF, and code fixtures used by tests
 ├── yo/                    # Python package
 │   ├── __init__.py        # warning filters + package metadata
@@ -63,7 +67,6 @@ Yo/
 │   ├── cli.py             # command-line interface
 │   └── webui.py           # FastAPI stub for the Lite UI
 ├── yo_full_test.sh        # optional regression script (called by `verify`)
-└── Yo_Handoff_Report.md   # current project context & roadmap
 ```
 
 ---
@@ -242,7 +245,7 @@ Need machine-readable data? Hit [http://localhost:8000/api/status](http://localh
 
 ## 8. Roadmap Snapshot
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
+See [`ROADMAP.md`](ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
 
 ---
 
