@@ -16,6 +16,8 @@ Status = Literal["ok", "warn", "fail"]
 
 from packaging.version import InvalidVersion, Version
 
+from packaging.version import InvalidVersion, Version
+
 from yo.brain import YoBrain
 
 
@@ -197,6 +199,21 @@ def run_doctor(_: argparse.Namespace, __: YoBrain | None = None) -> None:
             "pymilvus installed",
             lambda: _check_module("pymilvus", "Install with: pip install pymilvus[milvus_lite]"),
         )
+    )
+    all_ok &= _run_check(
+        "langchain-ollama installed",
+        lambda: _check_distribution(
+            "langchain-ollama",
+            "Install with: pip install langchain-ollama",
+        ),
+    )
+    all_ok &= _run_check(
+        "setuptools>=81",
+        lambda: _check_distribution(
+            "setuptools",
+            "Install with: pip install -U 'setuptools>=81'",
+            min_version="81",
+        ),
     )
 
     data_dir = Path("data")
