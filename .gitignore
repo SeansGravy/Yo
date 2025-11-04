@@ -9,3 +9,4 @@ fixtures/ingest/sample.xlsx
 
 .pytest_cache/
 .coverage
+data/logs/

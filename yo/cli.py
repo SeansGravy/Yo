@@ -20,6 +20,7 @@ from packaging.version import InvalidVersion, Version
 from yo.backends import detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
 from yo.config import get_config, reset_config, serialize_config, update_config_value
+from yo.verify import write_test_summary
 
 
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
@@ -97,11 +98,16 @@ def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
 
     if result.returncode == 0:
         print(f"\n✅ Verification complete. Check {logfile.name} for full details.\n")
+        write_test_summary("✅ Verify successful", logfile=str(logfile))
         return
 
     print(
         f"\n❌ Verification failed with exit code {result.returncode}. "
         f"Review {logfile.name} for details.\n"
+    )
+    write_test_summary(
+        f"❌ Verify failed (exit {result.returncode})",
+        logfile=str(logfile),
     )
     raise SystemExit(result.returncode)
 
