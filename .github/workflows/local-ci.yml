@@ -27,15 +27,46 @@ jobs:
             python3 -m pip install --break-system-packages -r requirements.txt
           fi
 
-      - name: Run unit tests
-        run: |
-          python3 -m pytest --maxfail=1 --disable-warnings -q
-
       - name: Run Yo CLI verify
+        run: python3 -m yo.cli verify
+
+      - name: Publish telemetry summary
+        if: always()
         run: |
-          python3 -m yo.cli verify
-          mkdir -p data/logs
-          echo "$(date +'%Y-%m-%d %H:%M:%S') ✅ Verify successful" >> data/logs/test_summary.log
+          python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+logs_dir = Path("data/logs")
+summary_path = logs_dir / "test_summary.json"
+history_path = logs_dir / "test_history.json"
+
+if not summary_path.exists():
+    print("No test summary produced by verify.")
+else:
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    lines = ["### Yo Validation Summary"]
+    lines.append(f"- Status: {summary.get('status', 'unknown')}")
+    lines.append(
+        f"- Tests: {summary.get('tests_passed', 0)}/{summary.get('tests_total', 0)} passed"
+    )
+    duration = summary.get("duration_seconds")
+    if duration is not None:
+        lines.append(f"- Duration: {float(duration):.2f}s")
+    pass_rate = summary.get("pass_rate")
+    if isinstance(pass_rate, (int, float)):
+        lines.append(f"- Pass rate: {pass_rate * 100:.1f}%")
+    print("\n".join(lines))
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+if history_path.exists():
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    print(f"Telemetry history entries: {len(history)}")
+PY
 
       - name: Upload test results
         if: always()
@@ -43,5 +74,7 @@ jobs:
         with:
           name: yo-test-results
           path: |
-            data/logs/test_summary.log
+            data/logs/test_summary.json
+            data/logs/test_history.json
+            data/logs/badge.md
             yo_test_results_*.log

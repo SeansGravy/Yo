@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from statistics import mean
 from importlib import metadata as importlib_metadata
 from importlib import util as import_util
 from pathlib import Path
@@ -20,7 +21,7 @@ from packaging.version import InvalidVersion, Version
 from yo.backends import detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
 from yo.config import get_config, reset_config, serialize_config, update_config_value
-from yo.verify import write_test_summary
+from yo.verify import run_pytest_with_metrics, write_test_summary
 
 
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
@@ -84,6 +85,12 @@ def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
         if not backends.ollama_cli.available:
             print(f"   • {backends.ollama_cli.message}")
 
+    pytest_returncode, pytest_metrics, _ = run_pytest_with_metrics(["--disable-warnings"])
+    if pytest_returncode != 0:
+        print("❌ Pytest reported failures. Aborting verify run.")
+        write_test_summary("❌ Pytest failed", **pytest_metrics)
+        raise SystemExit(pytest_returncode)
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     logfile = Path.cwd() / f"yo_test_results_{ts}.log"
     print(f"🧠 Running full Yo test suite… (logging to {logfile.name})")
@@ -98,7 +105,7 @@ def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
 
     if result.returncode == 0:
         print(f"\n✅ Verification complete. Check {logfile.name} for full details.\n")
-        write_test_summary("✅ Verify successful", logfile=str(logfile))
+        write_test_summary("✅ Verify successful", logfile=str(logfile), **pytest_metrics)
         return
 
     print(
@@ -108,6 +115,7 @@ def run_test(_: argparse.Namespace, __: YoBrain | None = None) -> None:
     write_test_summary(
         f"❌ Verify failed (exit {result.returncode})",
         logfile=str(logfile),
+        **pytest_metrics,
     )
     raise SystemExit(result.returncode)
 
@@ -416,6 +424,54 @@ def _handle_config_reset(args: argparse.Namespace, _: YoBrain | None = None) -> 
     print(f"✅ Reset {detail} for {scope}.")
 
 
+def _handle_telemetry_report(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    history_path = Path("data/logs/test_history.json")
+    if not history_path.exists():
+        print("ℹ️  No telemetry data recorded yet. Run `python3 -m yo.cli verify` first.")
+        return
+
+    try:
+        entries = json.loads(history_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        print("⚠️  Telemetry history is corrupted. Remove data/logs/test_history.json and rerun verify.")
+        return
+
+    if not isinstance(entries, list) or not entries:
+        print("ℹ️  Telemetry history is empty.")
+        return
+
+    last = entries[-1]
+    timestamp_str = last.get("timestamp")
+    try:
+        timestamp = datetime.fromisoformat(timestamp_str) if timestamp_str else None
+    except ValueError:
+        timestamp = None
+
+    status = last.get("status", "(unknown)")
+    total_runs = len(entries)
+
+    durations = [entry.get("duration_seconds") for entry in entries if isinstance(entry.get("duration_seconds"), (int, float))]
+    average_duration = mean(durations) if durations else None
+
+    successful_runs = sum(
+        1
+        for entry in entries
+        if str(entry.get("status", "")).startswith("✅") and (entry.get("tests_failed", 0) in (0, None))
+    )
+    pass_rate = (successful_runs / total_runs * 100) if total_runs else 0.0
+
+    print("📊 Yo Telemetry Report\n")
+    if timestamp:
+        print(f"Last run: {status} at {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        print(f"Last run: {status}")
+    print(f"Total runs logged: {total_runs}")
+    if average_duration is not None:
+        print(f"Average duration: {average_duration:.2f}s")
+    else:
+        print("Average duration: n/a")
+    print(f"Pass rate: {pass_rate:.1f}%")
+
 def _add_ns_options(parser: argparse.ArgumentParser) -> None:
     default_ns = _active_namespace_default()
     parser.add_argument(
@@ -487,6 +543,12 @@ def build_parser() -> argparse.ArgumentParser:
     config_reset.add_argument("--ns", help="Namespace override (optional)")
     config_reset.set_defaults(handler=_handle_config_reset)
 
+    telemetry_parser = subparsers.add_parser("telemetry", help="Test telemetry utilities")
+    telemetry_sub = telemetry_parser.add_subparsers(dest="telemetry_command", required=True)
+
+    telemetry_report = telemetry_sub.add_parser("report", help="Show recent test telemetry")
+    telemetry_report.set_defaults(handler=_handle_telemetry_report)
+
     cache_parser = subparsers.add_parser("cache", help="Web cache utilities")
     cache_sub = cache_parser.add_subparsers(dest="cache_command", required=True)
 
@@ -517,7 +579,7 @@ def main() -> None:
         parser.error("No command provided")
 
     brain: YoBrain | None = None
-    if args.command not in {"verify", "doctor", "config"}:
+    if args.command not in {"verify", "doctor", "config", "telemetry"}:
         ns_override = getattr(args, "ns", None)
         brain = YoBrain(namespace=ns_override)
 
