@@ -3,3 +3,6 @@ data/*.db
 yo/__pycache__/
 *.log
 
+data/namespace_meta.json
+yo/*.bak
+
