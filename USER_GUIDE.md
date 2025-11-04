@@ -34,6 +34,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+> The requirements file installs `langchain-ollama` and pins `setuptools>=81`, eliminating the `pkg_resources` deprecation warnings shown in earlier releases.
+
 > **OCR note:** For scanned PDFs, install the Tesseract binary (`brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu) so `pytesseract` can extract text during ingestion.
 
 ### 1.5 Pull required Ollama models
@@ -158,7 +160,7 @@ python3 -m yo.cli compact
 python3 -m yo.cli doctor
 ```
 
-* Confirms Python version, Ollama availability, required Python packages, and minimum `setuptools` version.
+* Confirms Python version, Ollama availability, required Python packages, `langchain-ollama`, and the minimum `setuptools` version.
 * Verifies that `yo_full_test.sh` and the `data/` directory are present.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
