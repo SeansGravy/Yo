@@ -17,7 +17,7 @@ cd Yo
 
 ### 1.2 Prerequisites
 
-* Python 3.10+
+* Python 3.9+ (3.10+ recommended)
 * [Ollama](https://ollama.com/download) installed and running locally
 * macOS or Linux shell (Windows WSL works too)
 
@@ -33,6 +33,8 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+> The requirements file installs `langchain-ollama>=0.1.0`, `milvus-lite>=2.4.4`, and pins `setuptools>=81`, eliminating the lingering `pkg_resources` deprecation warnings seen in earlier releases.
 
 > **OCR note:** For scanned PDFs, install the Tesseract binary (`brew install tesseract` on macOS, `sudo apt install tesseract-ocr` on Debian/Ubuntu) so `pytesseract` can extract text during ingestion.
 
@@ -56,8 +58,10 @@ Yo/
 ├── docs/                  # drop your `.txt` source files here (optional)
 ├── fixtures/ingest/       # sample Markdown, PDF, and code fixtures used by tests
 ├── yo/                    # Python package
+│   ├── __init__.py        # warning filters + package metadata
 │   ├── brain.py           # YoBrain orchestration logic
-│   └── cli.py             # command-line interface
+│   ├── cli.py             # command-line interface
+│   └── webui.py           # FastAPI stub for the Lite UI
 ├── yo_full_test.sh        # optional regression script (called by `verify`)
 └── Yo_Handoff_Report.md   # current project context & roadmap
 ```
@@ -158,8 +162,9 @@ python3 -m yo.cli compact
 python3 -m yo.cli doctor
 ```
 
-* Confirms Python version, Ollama availability, required Python packages, and minimum `setuptools` version.
-* Verifies that `yo_full_test.sh` and the `data/` directory are present.
+* Prints ✅/⚠️/❌ statuses for Python, `langchain`, `langchain-ollama>=0.1.0`, `setuptools>=81`, and `milvus-lite>=2.4.4`.
+* Verifies that Ollama, the Ollama Python bindings, `pymilvus[milvus_lite]`, `yo_full_test.sh`, and the `data/` directory are present.
+* Reports whether the Milvus Lite runtime can be imported so vector-store operations don’t fail later.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
 ### 4.8 `verify` — Run the regression suite
@@ -170,6 +175,7 @@ python3 -m yo.cli verify
 
 * Executes `yo_full_test.sh` (if the script is present).
 * Logs the output to `yo_test_results_<timestamp>.log`.
+* Automatically skips ingestion and Q&A checks when Milvus Lite or the Ollama backend is missing, marking those sections with ⚠️ entries instead of failing the suite.
 
 ---
 
@@ -197,7 +203,19 @@ python3 -m yo.cli compact
 
 ---
 
-## 6. Troubleshooting & Tips
+## 6. Lite Web UI Preview
+
+A FastAPI stub for the upcoming Lite UI lives in `yo/webui.py`. Launch it with Uvicorn to explore the prototype status page:
+
+```bash
+uvicorn yo.webui:app --reload
+```
+
+Then open [http://localhost:8000/ui](http://localhost:8000/ui) to view current namespaces and confirm the backend is reachable. You can also poll [http://localhost:8000/api/status](http://localhost:8000/api/status) for a JSON payload containing backend availability plus last-ingest timestamps for each namespace. Future milestones will extend these endpoints with ingestion progress and interactive controls.
+
+---
+
+## 7. Troubleshooting & Tips
 
 | Issue | Likely Cause | Fix |
 | ----- | ------------ | --- |
@@ -208,13 +226,14 @@ python3 -m yo.cli compact
 | `ask` returns no memory results | Namespace missing or empty | Verify ingestion ran successfully and that you used the correct `--ns`. |
 | Web lookup failed | Offline or DuckDuckGo blocked | Retry without `--web`, or investigate network connectivity. |
 | CLI shows dependency errors | Missing local setup steps | Run `python3 -m yo.cli doctor` to see which requirement is missing. |
+| `yo.cli verify` reports skipped steps | Milvus Lite or the Ollama backend is not installed | Install `pymilvus[milvus_lite]` plus the Ollama CLI and Python bindings (`pip install ollama langchain-ollama`) to run the full suite. |
 | `git pull` would overwrite files | You have local edits not yet saved | Run `git status` to inspect, then either commit (`git add` → `git commit`) or stash (`git stash --include-untracked`) before pulling again. |
 
 **Tip:** Keep `yo_full_test.sh` up-to-date with your end-to-end checks. `yo.cli verify` depends on it.
 
 ---
 
-## 7. Roadmap Snapshot
+## 8. Roadmap Snapshot
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
 
