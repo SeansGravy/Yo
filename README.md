@@ -27,6 +27,9 @@ python3 scripts/generate_ingest_fixtures.py
 - [Roadmap](docs/ROADMAP.md) — Upcoming phases and milestones
 - [Handoff Report](docs/Yo_Handoff_Report.md) — Architecture and development history
 - [Developer README](docs/README.md) — Detailed architecture and dev setup
+- [Release Notes](docs/RELEASE_NOTES.md) — Auto-synced audit snapshots per verified release
+- [Latest Audit Summary](docs/latest.html) — CI-published HTML report for the most recent verification run
+- [Changelog](docs/CHANGELOG.md) — Human-curated highlights for each verified release
 
 ## ⚙️ Configuration
 - Inspect merged settings with `python3 -m yo.cli config view` (resolves CLI overrides, `.env`, and namespace-specific defaults).
@@ -60,6 +63,42 @@ class YoBrain:
 
 ⚙️ *Easter Eggs*
 “If you’re reading this, congratulations — you’ve passed the Turing patience test.”
+
+## 🚀 Quick Start (One-Liner)
+
+Set up a fresh development environment, verify the stack, and launch the dashboard in a single command:
+
+```bash
+scripts/setup_yo_dev.sh
+```
+
+> The script provisions a virtualenv, installs dependencies, runs the full verification suite, and opens the dashboard so you can confirm everything is ready.
+
+## 📊 Namespace Intelligence
+
+- `yo namespace stats` (alias `yo ns stats`) prints per-namespace totals, deltas, growth %, and ingestion counts with alert thresholds:
+  - Documents > **1 000**, chunks > **5 000**, or growth spikes > **75 %** trigger colorized warnings.
+- `yo namespace drift --since 7d` highlights recent ingestion deltas over a configurable window (`24h`, `7d`, `2w`, …).
+- The Lite UI now mirrors these metrics — the namespaces table shows growth trends, verification status, and alert banners, and `/api/status` exposes the same JSON for tooling.
+
+## 🛠 Lifecycle & Snapshot Tools
+
+- `yo system clean [--dry-run]` removes stale logs and lock files (or previews the files it would delete).
+- `yo system snapshot [--name release_candidate]` archives configuration, telemetry, and log files to `data/snapshots/…tar.gz`.
+- `yo system restore <archive>` safely restores telemetry/config data (with path validation to prevent archive traversal).
+- Lifecycle events and snapshot metadata are tracked in `data/logs/lifecycle_history.json` so audits stay reproducible.
+
+## 🧾 Audit Reports & Doc Sync
+
+- `yo report audit (--json | --md | --html)` generates structured JSON, Markdown, and HTML summaries in `data/logs/audit_report.*`.
+- The Local CI workflow publishes these artifacts, copies the Markdown into `docs/RELEASE_NOTES.md`, and pushes doc updates alongside the latest tag.
+- CI also refreshes `docs/latest.html`, giving GitHub Pages an always-current audit snapshot.
+
+## 🧭 Dynamic Help, Aliases, & Color
+
+- `yo help` shows a categorized command directory. `yo help <command>` drills into subcommands with rich tables.
+- Aliases keep muscle memory sharp: `yo t` → `yo telemetry analyze`, `yo h` → `yo health report`.
+- Output is colorized when `rich` is available (auto-installed via `requirements.txt`), making summaries and alerts easy to scan in both CLI and CI logs.
 
 ## ⚙️ Testing
 ```bash

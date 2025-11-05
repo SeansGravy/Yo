@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from importlib import util as import_util
 from functools import lru_cache
 from pathlib import Path
@@ -20,12 +20,12 @@ from yo.backends import BackendStatus, detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
 from yo.logging_utils import get_logger
 from yo.telemetry import (
+    build_telemetry_summary,
     compute_trend,
     load_dependency_history,
     load_test_history,
     load_test_summary,
     load_telemetry_summary,
-    build_telemetry_summary,
 )
 
 
@@ -47,6 +47,12 @@ app = FastAPI(title="Yo Lite UI", version="0.4.0")
 
 
 MULTIPART_AVAILABLE = import_util.find_spec("python_multipart") is not None
+
+NAMESPACE_DOCUMENT_ALERT = 1000
+NAMESPACE_CHUNK_ALERT = 5000
+NAMESPACE_GROWTH_ALERT = 75.0
+DEFAULT_DRIFT_WINDOW = timedelta(days=7)
+DRIFT_WINDOW_LABEL = "7d"
 
 
 def _format_backend(status: BackendStatus) -> dict[str, Any]:
@@ -179,16 +185,51 @@ def api_status() -> JSONResponse:
             warning = str(exc)
             brain_available = False
 
+    telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
+    test_summary = load_test_summary()
+
+    drift_activity: dict[str, dict[str, Any]] = {}
+    if brain_available:
+        try:
+            drift_activity = brain.namespace_drift(DEFAULT_DRIFT_WINDOW)
+        except Exception:  # pragma: no cover - defensive guard
+            drift_activity = {}
+
     namespace_rows: list[dict[str, Any]] = []
     for name in namespaces:
         entry = activity.get(name, {})
+        drift_entry = drift_activity.get(name, {})
+        documents = int(entry.get("documents", 0) or 0)
+        chunks = int(entry.get("chunks", 0) or 0)
+        growth_value = float(
+            drift_entry.get("growth_percent", entry.get("growth_percent", 0.0)) or 0.0
+        )
+        alerts: list[str] = []
+        if documents > NAMESPACE_DOCUMENT_ALERT:
+            alerts.append(f"Document count {documents} exceeds {NAMESPACE_DOCUMENT_ALERT}")
+        if chunks > NAMESPACE_CHUNK_ALERT:
+            alerts.append(f"Chunk count {chunks} exceeds {NAMESPACE_CHUNK_ALERT}")
+        if growth_value > NAMESPACE_GROWTH_ALERT:
+            alerts.append(f"Growth {growth_value:.1f}% exceeds threshold")
+
         namespace_rows.append(
             {
                 "name": name,
                 "last_ingested": entry.get("last_ingested"),
-                "documents": entry.get("documents"),
-                "chunks": entry.get("chunks"),
+                "documents": documents,
+                "documents_delta": entry.get("documents_delta"),
+                "chunks": chunks,
+                "chunks_delta": entry.get("chunks_delta"),
                 "records": entry.get("records"),
+                "growth_percent": growth_value,
+                "ingest_runs": entry.get("ingest_runs"),
+                "drift": {
+                    "documents_added": drift_entry.get("documents_added"),
+                    "chunks_added": drift_entry.get("chunks_added"),
+                    "ingests": drift_entry.get("ingests"),
+                },
+                "last_verify_status": (test_summary or {}).get("status"),
+                "alerts": alerts,
             }
         )
 
@@ -218,10 +259,16 @@ def api_status() -> JSONResponse:
             "enabled": ingestion_enabled,
             "reason": "\n".join(dict.fromkeys(reasons)) if not ingestion_enabled and reasons else None,
         },
+        "health": {
+            "score": telemetry_summary.get("health_score"),
+            "pass_rate": telemetry_summary.get("pass_rate_mean"),
+            "latest_status": (test_summary or {}).get("status"),
+            "timestamp": (test_summary or {}).get("timestamp"),
+        },
+        "warning": warning,
+        "drift_window": DRIFT_WINDOW_LABEL,
         "timestamp": datetime.utcnow().isoformat(),
     }
-    if warning:
-        payload["warning"] = warning
 
     return JSONResponse(content=payload)
 
@@ -261,12 +308,36 @@ def dashboard(_: Request) -> HTMLResponse:
     try:
         brain = get_brain()
         namespace_activity = brain.namespace_activity()
-        namespace_section = "".join(
-            f"<li>{name}: {details.get('documents', 0)} docs, {details.get('chunks', 0)} chunks</li>"
-            for name, details in namespace_activity.items()
-        ) or "<li>No namespaces recorded.</li>"
+        namespace_drift = brain.namespace_drift(DEFAULT_DRIFT_WINDOW)
+        namespace_rows = []
+        for name, details in namespace_activity.items():
+            drift_entry = namespace_drift.get(name, {})
+            documents = details.get("documents", 0)
+            chunks = details.get("chunks", 0)
+            growth_value = drift_entry.get("growth_percent", details.get("growth_percent", 0.0))
+            alerts = []
+            if isinstance(documents, (int, float)) and documents > NAMESPACE_DOCUMENT_ALERT:
+                alerts.append(f"Documents {documents} > {NAMESPACE_DOCUMENT_ALERT}")
+            if isinstance(chunks, (int, float)) and chunks > NAMESPACE_CHUNK_ALERT:
+                alerts.append(f"Chunks {chunks} > {NAMESPACE_CHUNK_ALERT}")
+            if isinstance(growth_value, (int, float)) and growth_value > NAMESPACE_GROWTH_ALERT:
+                alerts.append(f"Growth {growth_value:.1f}% > {NAMESPACE_GROWTH_ALERT}")
+            namespace_rows.append(
+                "<tr><td>{name}</td><td>{docs}</td><td>{delta_docs}</td><td>{chunks}</td>"
+                "<td>{delta_chunks}</td><td>{growth}</td><td>{ingests}</td><td>{alerts}</td></tr>".format(
+                    name=name,
+                    docs=details.get("documents", 0),
+                    delta_docs=details.get("documents_delta", 0),
+                    chunks=details.get("chunks", 0),
+                    delta_chunks=details.get("chunks_delta", 0),
+                    growth=f"{growth_value:.1f}%" if isinstance(growth_value, (int, float)) else "—",
+                    ingests=details.get("ingest_runs", 0),
+                    alerts=", ".join(alerts) if alerts else "—",
+                )
+            )
+        namespace_table = "".join(namespace_rows) or "<tr><td colspan='8'>No namespaces recorded.</td></tr>"
     except Exception as exc:  # pragma: no cover - defensive guard for dashboard
-        namespace_section = f"<li>Error retrieving namespaces: {exc}</li>"
+        namespace_table = f"<tr><td colspan='8'>Error retrieving namespaces: {exc}</td></tr>"
 
     telemetry_block = ""
     if telemetry_summary:
@@ -293,6 +364,9 @@ def dashboard(_: Request) -> HTMLResponse:
         </section>
         """
 
+    health_score = telemetry_summary.get("health_score") if telemetry_summary else None
+    health_section = f"<section><h2>Health Overview</h2><ul><li>Health score: {health_score if health_score is not None else 'n/a'}</li><li>Drift window: {DRIFT_WINDOW_LABEL}</li></ul></section>"
+
     html = f"""
     <html>
       <head>
@@ -311,6 +385,7 @@ def dashboard(_: Request) -> HTMLResponse:
           <h2>Latest Verification</h2>
           <p>{status_line}</p>
         </section>
+        {health_section}
         <section>
           <h2>Recent Trend (last {len(trend)} runs)</h2>
           <table>
@@ -325,7 +400,10 @@ def dashboard(_: Request) -> HTMLResponse:
         {telemetry_block}
         <section>
           <h2>Namespace Activity</h2>
-          <ul>{namespace_section}</ul>
+          <table>
+            <thead><tr><th>Namespace</th><th>Documents</th><th>Δ Docs</th><th>Chunks</th><th>Δ Chunks</th><th>Growth</th><th>Ingests</th><th>Alerts</th></tr></thead>
+            <tbody>{namespace_table}</tbody>
+          </table>
         </section>
       </body>
     </html>

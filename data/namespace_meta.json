@@ -1,38 +1,152 @@
 {
   "default": {
-    "last_ingested": "2025-11-04T17:24:11.164161",
+    "last_ingested": "2025-11-04T21:20:28.593793",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 30,
-    "chunks": 414
-  },
-  "test": {
-    "last_ingested": "2025-11-04T17:23:37.074811",
-    "config": {
-      "model": "ollama:llama3",
-      "embed_model": "ollama:nomic-embed-text"
-    },
-    "documents": 15,
-    "chunks": 207
+    "documents": 64,
+    "chunks": 836,
+    "documents_delta": 7,
+    "chunks_delta": 73,
+    "ingest_runs": 4,
+    "growth_percent": 12.280701754385964,
+    "history": [
+      {
+        "timestamp": "2025-11-04T20:38:12.363449",
+        "documents_added": 5,
+        "chunks_added": 69,
+        "documents_total": 45,
+        "chunks_total": 621,
+        "documents_previous": 40,
+        "chunks_previous": 552,
+        "growth_percent": 12.5
+      },
+      {
+        "timestamp": "2025-11-04T20:39:17.296714",
+        "documents_added": 5,
+        "chunks_added": 69,
+        "documents_total": 50,
+        "chunks_total": 690,
+        "documents_previous": 45,
+        "chunks_previous": 621,
+        "growth_percent": 11.11111111111111
+      },
+      {
+        "timestamp": "2025-11-04T21:19:21.088313",
+        "documents_added": 7,
+        "chunks_added": 73,
+        "documents_total": 57,
+        "chunks_total": 763,
+        "documents_previous": 50,
+        "chunks_previous": 690,
+        "growth_percent": 14.000000000000002
+      },
+      {
+        "timestamp": "2025-11-04T21:20:28.593793",
+        "documents_added": 7,
+        "chunks_added": 73,
+        "documents_total": 64,
+        "chunks_total": 836,
+        "documents_previous": 57,
+        "chunks_previous": 763,
+        "growth_percent": 12.280701754385964
+      }
+    ]
   },
   "ingest_pdf": {
-    "last_ingested": "2025-11-04T17:01:27.816902",
+    "last_ingested": "2025-11-04T21:19:34.582000",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 2,
-    "chunks": 2
+    "documents": 5,
+    "chunks": 5,
+    "documents_delta": 1,
+    "chunks_delta": 1,
+    "ingest_runs": 2,
+    "growth_percent": 25.0,
+    "history": [
+      {
+        "timestamp": "2025-11-04T20:38:24.869930",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 4,
+        "chunks_total": 4,
+        "documents_previous": 3,
+        "chunks_previous": 3,
+        "growth_percent": 33.33333333333333
+      },
+      {
+        "timestamp": "2025-11-04T21:19:34.582000",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 5,
+        "chunks_total": 5,
+        "documents_previous": 4,
+        "chunks_previous": 4,
+        "growth_percent": 25.0
+      }
+    ]
   },
   "ingest_xlsx": {
-    "last_ingested": "2025-11-04T17:01:33.740891",
+    "last_ingested": "2025-11-04T21:19:39.825124",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 1,
-    "chunks": 1
+    "documents": 4,
+    "chunks": 4,
+    "documents_delta": 1,
+    "chunks_delta": 1,
+    "ingest_runs": 2,
+    "growth_percent": 33.33333333333333,
+    "history": [
+      {
+        "timestamp": "2025-11-04T20:38:30.463747",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 3,
+        "chunks_total": 3,
+        "documents_previous": 2,
+        "chunks_previous": 2,
+        "growth_percent": 50.0
+      },
+      {
+        "timestamp": "2025-11-04T21:19:39.825124",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 4,
+        "chunks_total": 4,
+        "documents_previous": 3,
+        "chunks_previous": 3,
+        "growth_percent": 33.33333333333333
+      }
+    ]
+  },
+  "test": {
+    "last_ingested": "2025-11-04T21:19:26.927782",
+    "config": {
+      "model": "ollama:llama3",
+      "embed_model": "ollama:nomic-embed-text"
+    },
+    "documents": 7,
+    "chunks": 73,
+    "documents_delta": 7,
+    "chunks_delta": 73,
+    "ingest_runs": 1,
+    "growth_percent": 100.0,
+    "history": [
+      {
+        "timestamp": "2025-11-04T21:19:26.927782",
+        "documents_added": 7,
+        "chunks_added": 73,
+        "documents_total": 7,
+        "chunks_total": 73,
+        "documents_previous": 0,
+        "chunks_previous": 0,
+        "growth_percent": 100.0
+      }
+    ]
   }
 }

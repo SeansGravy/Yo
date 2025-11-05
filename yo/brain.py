@@ -448,16 +448,49 @@ class YoBrain:
     ) -> None:
         meta = self._load_namespace_meta()
         entry = meta.setdefault(namespace, {})
-        entry["last_ingested"] = datetime.now().isoformat()
+        now = datetime.now()
+        entry["last_ingested"] = now.isoformat()
         config_block = entry.setdefault("config", {})
         config_block["model"] = getattr(self, "model_selection", None).spec if getattr(self, "model_selection", None) else self.config.model_spec
         config_block["embed_model"] = getattr(self, "embedding_selection", None).spec if getattr(self, "embedding_selection", None) else self.config.embed_model_spec
+        previous_documents = int(entry.get("documents", 0) or 0)
+        previous_chunks = int(entry.get("chunks", 0) or 0)
+        documents_added = int(documents or 0)
+        chunks_added = int(chunks or 0)
         if documents is not None:
-            existing = int(entry.get("documents", 0) or 0)
-            entry["documents"] = existing + int(documents)
+            entry["documents"] = previous_documents + documents_added
         if chunks is not None:
-            existing_chunks = int(entry.get("chunks", 0) or 0)
-            entry["chunks"] = existing_chunks + int(chunks)
+            entry["chunks"] = previous_chunks + chunks_added
+        entry["documents_delta"] = documents_added
+        entry["chunks_delta"] = chunks_added
+        total_documents = int(entry.get("documents", previous_documents))
+        total_chunks = int(entry.get("chunks", previous_chunks))
+        entry["ingest_runs"] = int(entry.get("ingest_runs", 0)) + 1
+
+        if previous_documents > 0 and documents_added:
+            growth_percent = (documents_added / previous_documents) * 100
+        elif documents_added and previous_documents == 0:
+            growth_percent = 100.0
+        else:
+            growth_percent = 0.0
+        entry["growth_percent"] = growth_percent
+
+        history = entry.setdefault("history", [])
+        history.append(
+            {
+                "timestamp": now.isoformat(),
+                "documents_added": documents_added,
+                "chunks_added": chunks_added,
+                "documents_total": total_documents,
+                "chunks_total": total_chunks,
+                "documents_previous": previous_documents,
+                "chunks_previous": previous_chunks,
+                "growth_percent": growth_percent,
+            }
+        )
+        if len(history) > 100:
+            del history[:-100]
+
         self._save_namespace_meta(meta)
 
     def _rollback_insert(self, collection: Collection, ids: List[int]) -> None:
@@ -724,14 +757,78 @@ class YoBrain:
         activity: Dict[str, Dict[str, Any]] = {}
         for ns in self.ns_list(silent=True):
             entry = meta.get(ns, {})
+            history = entry.get("history") or []
+            last_history = history[-1] if history else {}
             stats: Dict[str, Any] = {
                 "last_ingested": entry.get("last_ingested"),
-                "documents": entry.get("documents"),
-                "chunks": entry.get("chunks"),
+                "documents": entry.get("documents", 0),
+                "chunks": entry.get("chunks", 0),
+                "documents_delta": last_history.get("documents_added", entry.get("documents_delta", 0)),
+                "chunks_delta": last_history.get("chunks_added", entry.get("chunks_delta", 0)),
+                "growth_percent": last_history.get("growth_percent", entry.get("growth_percent", 0.0)),
+                "ingest_runs": entry.get("ingest_runs", len(history)),
             }
             stats.update(self._namespace_stats(ns))
             activity[ns] = stats
         return activity
+
+    def namespace_drift(self, since: timedelta) -> Dict[str, Dict[str, Any]]:
+        meta = self._load_namespace_meta()
+        threshold = datetime.now() - since
+        drift: Dict[str, Dict[str, Any]] = {}
+
+        for ns in self.ns_list(silent=True):
+            entry = meta.get(ns, {})
+            history = entry.get("history") or []
+            documents_added = 0
+            chunks_added = 0
+            ingests = 0
+            baseline_documents: Optional[int] = None
+            baseline_chunks: Optional[int] = None
+
+            for item in history:
+                ts_raw = item.get("timestamp")
+                try:
+                    ts = datetime.fromisoformat(ts_raw)
+                except Exception:
+                    continue
+                if ts < threshold:
+                    continue
+                ingests += 1
+                documents_added += int(item.get("documents_added", 0) or 0)
+                chunks_added += int(item.get("chunks_added", 0) or 0)
+                if baseline_documents is None:
+                    baseline_documents = int(item.get("documents_previous", 0) or 0)
+                    baseline_chunks = int(item.get("chunks_previous", 0) or 0)
+
+            total_documents = int(entry.get("documents", 0) or 0)
+            total_chunks = int(entry.get("chunks", 0) or 0)
+
+            if baseline_documents is None:
+                baseline_documents = max(total_documents - documents_added, 0)
+            if baseline_chunks is None:
+                baseline_chunks = max(total_chunks - chunks_added, 0)
+
+            if baseline_documents > 0 and documents_added:
+                growth_percent = (documents_added / baseline_documents) * 100
+            elif documents_added and baseline_documents == 0:
+                growth_percent = 100.0
+            else:
+                growth_percent = 0.0
+
+            stats: Dict[str, Any] = {
+                "documents_added": documents_added,
+                "chunks_added": chunks_added,
+                "documents_total": total_documents,
+                "chunks_total": total_chunks,
+                "growth_percent": growth_percent,
+                "ingests": ingests,
+                "last_ingested": entry.get("last_ingested"),
+                "window_seconds": since.total_seconds(),
+            }
+            stats.update(self._namespace_stats(ns))
+            drift[ns] = stats
+        return drift
 
     def ns_switch(self, namespace: str) -> str:
         coll_name = self._collection_name(namespace)

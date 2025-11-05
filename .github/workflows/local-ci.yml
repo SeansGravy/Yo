@@ -1,5 +1,9 @@
 name: Yo Local CI Mirror
 
+permissions:
+  contents: write
+  pull-requests: write
+
 on:
   push:
     branches: [ main, feature/*, fix/* ]
@@ -18,6 +22,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+
+      - name: Configure Git for CI
+        run: |
+          git config --global user.name "codex-bot"
+          git config --global user.email "codex@local"
+          git config --global init.defaultBranch main
+          git checkout main || git switch main
+          git pull --rebase
+
+      - name: Verify doc version
+        run: |
+          VERSION=$(git describe --tags --abbrev=0)
+          grep -q "$VERSION" README.md || (echo "README does not contain version $VERSION" && exit 1)
 
       - name: Install dependencies
         run: |
@@ -92,6 +109,60 @@ if analytics:
             fh.write("\n".join(lines) + "\n")
 PY
 
+      - name: Yo Audit Report
+        if: always()
+        run: |
+          python3 -m yo.cli report audit
+          export YO_HEALTH_SCORE=$(python3 -m yo.cli health report --json | jq -r '.health_score // .score // 0')
+          if [ -z "$YO_HEALTH_SCORE" ] || [ "$YO_HEALTH_SCORE" = "null" ]; then
+            YO_HEALTH_SCORE=0
+            export YO_HEALTH_SCORE
+          fi
+          echo "YO_HEALTH_SCORE=${YO_HEALTH_SCORE}" >> $GITHUB_ENV
+          python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+audit_path = Path("data/logs/audit_report.json")
+if audit_path.exists():
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        audit = {}
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    health_score = os.environ.get("YO_HEALTH_SCORE", "n/a")
+    if summary_file:
+        lines = ["### Yo Audit Overview"]
+        health = audit.get("health", {})
+        score = health.get("score", "n/a")
+        lines.append(f"- Health score: {score}")
+        lines.append(f"- Latest verify status: {health.get('latest_status', 'unknown')}")
+        namespaces = audit.get("namespaces", [])
+        lines.append(f"- Namespaces tracked: {len(namespaces)}")
+        dep_events = audit.get("dependency_events", [])
+        lines.append(f"- Recent dependency events: {len(dep_events)}")
+        with open(summary_file, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+PY
+
+      - name: Sync documentation with latest release
+        if: ${{ success() }}
+        run: |
+          VERSION=$(git describe --tags --abbrev=0)
+          sed -i "s/^\*\*Current Release:.*$/\*\*Current Release:\*\* ${VERSION}/" README.md
+          python3 -m yo.cli report audit --json --md --html
+          cp data/logs/audit_report.md docs/RELEASE_NOTES.md
+          cp data/logs/audit_report.html docs/latest.html
+          echo "YO_VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Update CHANGELOG
+        if: ${{ success() }}
+        run: |
+          VERSION=$(git describe --tags --abbrev=0)
+          DATE=$(date +%Y-%m-%d)
+          sed -i "2i## [${VERSION}] – ${DATE}\n### Added\n- Auto-generated entry\n" docs/CHANGELOG.md
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -103,4 +174,107 @@ PY
             data/logs/dependency_history.json
             data/logs/telemetry_summary.json
             data/logs/badge.md
+            data/logs/audit_report.json
+            data/logs/audit_report.md
+            data/logs/audit_report.html
             yo_test_results_*.log
+            docs/CHANGELOG.md
+
+      - name: Check artifact sizes
+        if: ${{ success() }}
+        run: |
+          for f in data/logs/audit_report.md data/logs/test_summary.json docs/CHANGELOG.md; do
+            if [ ! -f "$f" ]; then
+              echo "❌ Missing $f"
+              exit 1
+            fi
+            size=$(wc -c <"$f")
+            if [ "$size" -le 200 ]; then
+              echo "❌ $f appears too small ($size bytes)"
+              exit 1
+            fi
+            echo "✅ $f size OK ($size bytes)"
+          done
+
+      - name: Generate artifact checksums
+        if: ${{ success() }}
+        run: |
+          mkdir -p data/logs/checksums
+          find data/logs -type f \( -name '*.json' -o -name '*.md' -o -name '*.html' \) -exec shasum -a 256 {} \; > data/logs/checksums/artifact_hashes.txt
+          echo "✅ Generated artifact checksums:"
+          cat data/logs/checksums/artifact_hashes.txt
+
+      - name: Commit and push verified results
+        id: publish
+        if: ${{ success() && env.YO_HEALTH_SCORE && fromJSON(env.YO_HEALTH_SCORE) >= 90 }}
+        run: |
+          VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
+          HEALTH_INT=$(printf '%.0f' "$YO_HEALTH_SCORE")
+          git add -A
+          if git diff --cached --quiet; then
+            echo "### 📦 Auto-publish Summary" >> $GITHUB_STEP_SUMMARY
+            echo "Release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+            echo "Health Score: ${HEALTH_INT} (threshold 90)" >> $GITHUB_STEP_SUMMARY
+            echo "Artifacts: audit_report.html, CHANGELOG.md, README.md" >> $GITHUB_STEP_SUMMARY
+            echo "Status: ⚠️ No changes to publish" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          git commit -m "auto: sync verified build for $(date +'%Y-%m-%d %H:%M')"
+          git push origin main
+          echo "### 📦 Auto-publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "Health Score: ${HEALTH_INT} (threshold 90)" >> $GITHUB_STEP_SUMMARY
+          echo "Artifacts: audit_report.html, CHANGELOG.md, README.md" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ✅ Published" >> $GITHUB_STEP_SUMMARY
+
+      - name: Verify artifact integrity
+        if: ${{ steps.publish.outcome == 'success' }}
+        run: |
+          git fetch origin main
+          mkdir -p tmp/verify
+          cp data/logs/checksums/artifact_hashes.txt tmp/verify/
+          git checkout origin/main -- data/logs
+          diff -q data/logs/checksums/artifact_hashes.txt tmp/verify/artifact_hashes.txt && \
+            echo "✅ Artifact integrity verified." || \
+            (echo "❌ Artifact mismatch detected." && exit 1)
+
+      - name: Publish skipped (health gate)
+        if: ${{ success() && env.YO_HEALTH_SCORE && fromJSON(env.YO_HEALTH_SCORE) < 90 }}
+        run: |
+          VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
+          HEALTH_INT=$(printf '%.0f' "$YO_HEALTH_SCORE")
+          echo "### 📦 Auto-publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "Health Score: ${HEALTH_INT} (threshold 90)" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ⚠️ Skipped due to health gate" >> $GITHUB_STEP_SUMMARY
+
+      - name: Post-publish validation
+        if: ${{ steps.publish.outcome == 'success' }}
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+          VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
+          grep -q "$VERSION" README.md || exit 1
+          test -f docs/CHANGELOG.md || exit 1
+          test -f data/logs/audit_report.html || exit 1
+          echo "✅ All post-publish checks passed"
+
+      - name: Verify push success
+        if: ${{ steps.publish.outcome == 'success' }}
+        run: |
+          git fetch origin main
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse origin/main)
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "✅ Verified GitHub updated successfully."
+          else
+            echo "❌ Push verification failed." && exit 1
+          fi
+
+      - name: Rollback failed publish
+        if: ${{ failure() && steps.publish.outcome == 'success' }}
+        run: |
+          git config user.name "codex-bot"
+          git config user.email "codex@local"
+          git revert --no-edit HEAD || echo "No revert needed"
+          git push origin main || echo "rollback push skipped"

@@ -201,6 +201,45 @@ python3 -m yo.cli verify
 * Executes `yo_full_test.sh` (if the script is present).
 * Logs the output to `yo_test_results_<timestamp>.log`.
 * Automatically skips ingestion and Q&A checks when Milvus Lite or the Ollama backend is missing, marking those sections with ⚠️ entries instead of failing the suite.
+* Persists telemetry under `data/logs/` (`test_summary.json`, `test_history.json`, `dependency_history.json`, `telemetry_summary.json`) and prints a banner summarizing release/namespace/health if Rich is available.
+
+### 4.10 `report audit` — Generate compliance reports
+
+```bash
+python3 -m yo.cli report audit
+python3 -m yo.cli report audit --json
+python3 -m yo.cli report audit --md --html
+```
+
+* Writes structured JSON/Markdown/HTML audits to `data/logs/audit_report.*`.
+* `--json`, `--md`, and `--html` stream the chosen format to stdout.
+* Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
+* CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
+
+### 4.11 `system` — Lifecycle tooling
+
+```bash
+python3 -m yo.cli system clean --dry-run
+python3 -m yo.cli system snapshot --name rc_candidate
+python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
+```
+
+* `clean` removes (or previews) stale logs and lock files produced during testing.
+* `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
+* `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
+
+### 4.12 `help` — Discover commands and aliases
+
+```bash
+python3 -m yo.cli help
+python3 -m yo.cli help namespace
+python3 -m yo.cli t     # alias for `yo telemetry analyze`
+python3 -m yo.cli h     # alias for `yo health report`
+```
+
+* `help` renders categorized command tables (Rich adds color automatically).
+* Subcommand help surfaces nested actions like `namespace stats` and `namespace drift`.
+* Aliases keep workflows fast; Rich-based color output is bundled via `requirements.txt`.
 
 ---
 

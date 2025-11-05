@@ -35,3 +35,4 @@ SpeechRecognition
 pandas
 tqdm
 numpy
+rich

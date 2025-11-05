@@ -34,25 +34,56 @@ class FakeUpload:
 class DummyBrain:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        now = "2024-11-02T10:00:00"
+        self._activity = {
+            "default": {
+                "last_ingested": now,
+                "documents": 3,
+                "documents_delta": 1,
+                "chunks": 42,
+                "chunks_delta": 5,
+                "records": 84,
+                "growth_percent": 12.5,
+                "ingest_runs": 2,
+            },
+            "projects": {
+                "last_ingested": None,
+                "documents": None,
+                "documents_delta": None,
+                "chunks": None,
+                "chunks_delta": None,
+                "records": 0,
+                "growth_percent": 0.0,
+                "ingest_runs": 0,
+            },
+        }
+        self._drift = {
+            "default": {
+                "documents_added": 2,
+                "chunks_added": 8,
+                "growth_percent": 18.0,
+                "ingests": 2,
+                "records": 84,
+                "last_ingested": now,
+            },
+            "projects": {
+                "documents_added": 0,
+                "chunks_added": 0,
+                "growth_percent": 0.0,
+                "ingests": 0,
+                "records": 0,
+                "last_ingested": None,
+            },
+        }
 
     def ns_list(self, *, silent: bool = False) -> list[str]:  # noqa: D401 - simple stub
         return ["default", "projects"]
 
     def namespace_activity(self) -> dict[str, dict[str, object]]:
-        return {
-            "default": {
-                "last_ingested": "2024-11-02T10:00:00",
-                "documents": 3,
-                "chunks": 42,
-                "records": 84,
-            },
-            "projects": {
-                "last_ingested": None,
-                "documents": None,
-                "chunks": None,
-                "records": 0,
-            },
-        }
+        return self._activity
+
+    def namespace_drift(self, _window) -> dict[str, dict[str, object]]:  # type: ignore[override]
+        return self._drift
 
     def ingest(self, path: str, namespace: str = "default") -> dict[str, object]:
         assert Path(path).exists()
@@ -96,6 +127,8 @@ def test_status_endpoint_reports_namespaces(dummy_client: tuple[TestClient, Dumm
     assert payload["backends"]["ollama"]["ready"] is True
     assert len(payload["namespaces"]) == 2
     assert payload["namespaces"][0]["name"] == "default"
+    assert "health" in payload
+    assert payload["drift_window"] == "7d"
     assert payload["ingestion"]["enabled"] is True
 
 

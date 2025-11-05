@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -140,3 +141,72 @@ def test_ns_purge_falls_back_to_first_available_when_default_missing(
 
     assert drop_calls == ["yo_reports"]
     assert brain.active_namespace == "finance"  # type: ignore[attr-defined]
+
+
+def test_namespace_activity_exposes_growth_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    brain, collections, _ = _build_brain(tmp_path, monkeypatch, ["default"])
+    monkeypatch.setattr(brain_module, "Collection", lambda name: SimpleNamespace(num_entities=256))
+
+    timestamp = datetime.now().isoformat()
+    meta_payload = {
+        "default": {
+            "documents": 120,
+            "documents_delta": 20,
+            "chunks": 300,
+            "chunks_delta": 40,
+            "growth_percent": 18.0,
+            "ingest_runs": 4,
+            "last_ingested": timestamp,
+            "history": [
+                {
+                    "timestamp": timestamp,
+                    "documents_added": 20,
+                    "chunks_added": 40,
+                    "documents_total": 120,
+                    "chunks_total": 300,
+                    "documents_previous": 100,
+                    "chunks_previous": 260,
+                    "growth_percent": 20.0,
+                }
+            ],
+        }
+    }
+    brain.meta_path.write_text(json.dumps(meta_payload), encoding="utf-8")  # type: ignore[attr-defined]
+
+    stats = brain.namespace_activity()
+    assert stats["default"]["documents_delta"] == 20
+    assert stats["default"]["chunks_delta"] == 40
+    assert stats["default"]["ingest_runs"] == 4
+    assert stats["default"]["records"] == 256
+
+
+def test_namespace_drift_calculates_growth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    brain, collections, _ = _build_brain(tmp_path, monkeypatch, ["default"])
+    monkeypatch.setattr(brain_module, "Collection", lambda name: SimpleNamespace(num_entities=100))
+
+    now = datetime.now()
+    meta_payload = {
+        "default": {
+            "documents": 200,
+            "chunks": 400,
+            "history": [
+                {
+                    "timestamp": (now - timedelta(hours=2)).isoformat(),
+                    "documents_added": 30,
+                    "chunks_added": 60,
+                    "documents_total": 200,
+                    "chunks_total": 400,
+                    "documents_previous": 170,
+                    "chunks_previous": 340,
+                    "growth_percent": 17.6,
+                }
+            ],
+        }
+    }
+    brain.meta_path.write_text(json.dumps(meta_payload), encoding="utf-8")  # type: ignore[attr-defined]
+
+    drift = brain.namespace_drift(timedelta(days=1))
+    default = drift["default"]
+    assert default["documents_added"] == 30
+    assert default["chunks_added"] == 60
+    assert pytest.approx(default["growth_percent"], rel=1e-3) == 17.647

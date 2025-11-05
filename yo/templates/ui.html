@@ -76,6 +76,10 @@
       .notice.ok {
         color: #2e7d32;
       }
+      .notice.small {
+        font-size: 0.85rem;
+        color: #555;
+      }
       .actions {
         display: flex;
         gap: 0.5rem;
@@ -94,6 +98,17 @@
       button[disabled] {
         background: #9ca3af;
         cursor: not-allowed;
+      }
+      .alert-row {
+        background: #fff0f0;
+      }
+      .alert-row td {
+        color: #8b1e1e;
+      }
+      .health-summary {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.95rem;
       }
       input[type="text"] {
         padding: 0.5rem;
@@ -141,6 +156,15 @@
           background: #111827;
           color: #e5e7eb;
         }
+        .notice.small {
+          color: #9ca3af;
+        }
+        .alert-row {
+          background: #3b0f0f;
+        }
+        .alert-row td {
+          color: #fca5a5;
+        }
       }
     </style>
   </head>
@@ -160,6 +184,10 @@
       <ul id="backend-status" class="status-list"></ul>
     </section>
     <section>
+      <h2>Health Overview</h2>
+      <div id="health-summary" class="health-summary">Loading…</div>
+    </section>
+    <section>
       <h2>Namespaces</h2>
       <table id="namespace-table">
         <thead>
@@ -167,12 +195,19 @@
             <th>Namespace</th>
             <th>Last Ingested</th>
             <th>Documents</th>
+            <th>Δ Docs</th>
             <th>Chunks</th>
+            <th>Δ Chunks</th>
             <th>Records</th>
+            <th>Growth</th>
+            <th>Ingests</th>
+            <th>Verify Status</th>
+            <th>Alerts</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
+      <p id="namespace-caption" class="notice small"></p>
     </section>
     <section>
       <h2>Ingest Documents</h2>
@@ -196,6 +231,28 @@
 
       function iconFor(available) {
         return available ? '✅' : '❌';
+      }
+
+      const numberFormatter = new Intl.NumberFormat('en-US');
+
+      function formatNumber(value) {
+        if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+        return numberFormatter.format(Number(value));
+      }
+
+      function formatDelta(value) {
+        if (value === null || value === undefined) return '0';
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric === 0) return '0';
+        const prefix = numeric > 0 ? '+' : '';
+        return `${prefix}${numberFormatter.format(numeric)}`;
+      }
+
+      function formatPercent(value) {
+        if (value === null || value === undefined) return '—';
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return '—';
+        return `${numeric.toFixed(1)}%`;
       }
 
       function renderBackends(backends) {
@@ -223,26 +280,69 @@
         }
       }
 
-      function renderNamespaces(namespaces) {
+      function renderHealth(health) {
+        const container = document.getElementById('health-summary');
+        if (!container) {
+          return;
+        }
+        if (!health) {
+          container.textContent = 'No telemetry recorded yet. Run `python3 -m yo.cli verify` to populate metrics.';
+          return;
+        }
+        const rawScore = health.score;
+        const score = rawScore !== null && rawScore !== undefined ? Math.round(Number(rawScore)) : '—';
+        let passRateValue = health.pass_rate;
+        if (passRateValue !== null && passRateValue !== undefined) {
+          passRateValue = Number(passRateValue);
+          passRateValue = passRateValue <= 1 ? passRateValue * 100 : passRateValue;
+        }
+        const passRate = passRateValue !== null && passRateValue !== undefined && Number.isFinite(passRateValue)
+          ? `${passRateValue.toFixed(1)}%`
+          : '—';
+        const status = health.latest_status || 'Unknown';
+        const timestamp = health.timestamp ? new Date(health.timestamp).toLocaleString() : '—';
+        container.innerHTML = `
+          <p><strong>Health Score:</strong> ${score}</p>
+          <p><strong>Pass Rate:</strong> ${passRate}</p>
+          <p><strong>Last Verify:</strong> ${status}</p>
+          <p><strong>Updated:</strong> ${timestamp}</p>
+        `;
+      }
+
+      function renderNamespaces(namespaces, driftWindow) {
         const tbody = document.querySelector('#namespace-table tbody');
         tbody.innerHTML = '';
         if (!Array.isArray(namespaces) || namespaces.length === 0) {
           const row = document.createElement('tr');
           const cell = document.createElement('td');
-          cell.colSpan = 5;
+          cell.colSpan = 11;
           cell.textContent = 'No namespaces available yet.';
           row.appendChild(cell);
           tbody.appendChild(row);
+          const caption = document.getElementById('namespace-caption');
+          if (caption) caption.textContent = '';
           return;
         }
         for (const ns of namespaces) {
           const row = document.createElement('tr');
+          if (ns.alerts && ns.alerts.length) {
+            row.classList.add('alert-row');
+          }
+          const growth = ns.growth_percent !== undefined && ns.growth_percent !== null
+            ? formatPercent(Number(ns.growth_percent))
+            : '—';
           const fields = [
             ns.name,
             ns.last_ingested ? new Date(ns.last_ingested).toLocaleString() : '—',
-            ns.documents ?? '—',
-            ns.chunks ?? '—',
-            ns.records ?? '—'
+            formatNumber(ns.documents),
+            formatDelta(ns.documents_delta),
+            formatNumber(ns.chunks),
+            formatDelta(ns.chunks_delta),
+            formatNumber(ns.records),
+            growth,
+            ns.ingest_runs ?? '—',
+            ns.last_verify_status ?? '—',
+            Array.isArray(ns.alerts) && ns.alerts.length ? ns.alerts.join('; ') : '—',
           ];
           for (const value of fields) {
             const cell = document.createElement('td');
@@ -250,6 +350,10 @@
             row.appendChild(cell);
           }
           tbody.appendChild(row);
+        }
+        const caption = document.getElementById('namespace-caption');
+        if (caption) {
+          caption.textContent = `Growth reflects cumulative change over the last ${driftWindow || 'recent runs'}.`;
         }
       }
 
@@ -289,7 +393,8 @@
           const response = await fetch(statusUrl, { cache: 'no-store' });
           const data = await response.json();
           renderBackends(data.backends);
-          renderNamespaces(data.namespaces);
+          renderHealth(data.health);
+          renderNamespaces(data.namespaces, data.drift_window);
           updateIngestionState(data.ingestion);
           updateWarningBanner(data.warning);
         } catch (error) {

@@ -199,6 +199,75 @@ def deps_freeze_command(_: object = None) -> Path:
     return deps_freeze()
 
 
+def _load_requirements(path: Path) -> Dict[str, str]:
+    packages: Dict[str, str] = {}
+    if not path.exists():
+        return packages
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "==" in stripped:
+            name, version = stripped.split("==", 1)
+            packages[name.lower()] = version
+        else:
+            packages[stripped.lower()] = ""
+    return packages
+
+
+def deps_diff() -> Dict[str, Dict[str, str]]:
+    requirements = _load_requirements(REQUIREMENTS_PATH)
+    lock = _load_requirements(REQUIREMENTS_LOCK_PATH)
+    added = {pkg: version for pkg, version in requirements.items() if pkg not in lock}
+    removed = {pkg: version for pkg, version in lock.items() if pkg not in requirements}
+    changed = {
+        pkg: {"requirements": requirements[pkg], "lock": lock[pkg]}
+        for pkg in requirements
+        if pkg in lock and requirements[pkg] != lock[pkg]
+    }
+    if added or removed or changed:
+        _record_dependency_event(
+            "drift",
+            list(added.keys()) + list(changed.keys()) + list(removed.keys()),
+        )
+    return {"added": added, "removed": removed, "changed": changed}
+
+
+def deps_sync() -> int:
+    if not REQUIREMENTS_LOCK_PATH.exists():
+        raise FileNotFoundError("requirements-lock.txt not found. Run `yo deps freeze` first.")
+    proc = _run_pip(["install", "-r", str(REQUIREMENTS_LOCK_PATH)])
+    if proc.returncode == 0:
+        _record_dependency_event("sync", ["requirements-lock.txt"])
+    else:
+        print(proc.stderr.strip())
+    return proc.returncode
+
+
+def deps_diff_command(_: object = None) -> Dict[str, Dict[str, str]]:
+    diff = deps_diff()
+    if not diff["added"] and not diff["removed"] and not diff["changed"]:
+        print("✅ requirements.txt matches requirements-lock.txt")
+    else:
+        if diff["added"]:
+            print("⚠️  Packages in requirements.txt missing from lock:")
+            for pkg, version in diff["added"].items():
+                print(f"   • {pkg} ({version})")
+        if diff["removed"]:
+            print("⚠️  Packages in lock missing from requirements.txt:")
+            for pkg, version in diff["removed"].items():
+                print(f"   • {pkg} ({version})")
+        if diff["changed"]:
+            print("⚠️  Version differences detected:")
+            for pkg, versions in diff["changed"].items():
+                print(f"   • {pkg}: requirements={versions['requirements']} lock={versions['lock']}")
+    return diff
+
+
+def deps_sync_command(_: object = None) -> int:
+    return deps_sync()
+
+
 __all__ = [
     "deps_check",
     "deps_repair",
@@ -206,4 +275,8 @@ __all__ = [
     "deps_check_command",
     "deps_repair_command",
     "deps_freeze_command",
+    "deps_diff",
+    "deps_sync",
+    "deps_diff_command",
+    "deps_sync_command",
 ]
