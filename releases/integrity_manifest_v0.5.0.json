@@ -1,0 +1,1 @@
+{"version": "v0.5.0", "commit": "abc1234", "timestamp": "2025-11-07T00:00:00Z", "health": 97.2, "release_bundle": "releases/release_v0.5.0.tar.gz", "bundle_signature": "releases/release_v0.5.0.tar.gz.sig", "bundle_checksum": "deadbeef", "manifest_path": "releases/integrity_manifest_v0.5.0.json"}
