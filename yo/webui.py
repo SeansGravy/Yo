@@ -381,6 +381,9 @@ def build_status_payload() -> dict[str, Any]:
     if warning:
         reasons.append(warning)
 
+    metrics_snapshot = summarize_since("7d")
+    analytics_snapshot = summarize_usage(load_analytics())
+
     payload: dict[str, Any] = {
         "backends": backend_info,
         "namespaces": namespace_rows,
@@ -400,6 +403,8 @@ def build_status_payload() -> dict[str, Any]:
         "verification": verification_info,
         "release": release_info,
         "releases": releases_list,
+        "metrics": metrics_snapshot,
+        "analytics": analytics_snapshot,
     }
     payload["optimizer"] = {
         "recommendations": generate_recommendations()[:3],

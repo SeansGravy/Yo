@@ -5,8 +5,11 @@ from typing import Any, Dict, Iterable
 
 import pytest
 
+from starlette.testclient import TestClient
+
 from yo.chat import ChatSessionStore
 from yo.events import get_event_bus
+import yo.webui as webui
 
 
 class StubBrain:
@@ -111,3 +114,36 @@ async def test_chat_send_emits_message_event() -> None:
         assert message_events[0]["reply"] == "Acknowledged."
     finally:
         await bus.unsubscribe(queue)
+
+
+def test_chat_rest_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    class RestStub:
+        def chat(self, **kwargs):
+            return {"response": "Fallback reply", "citations": []}
+
+        def chat_stream(self, **kwargs):
+            yield {"token": "Fallback", "done": True, "response": "Fallback reply", "citations": []}
+
+    monkeypatch.setattr(webui, "get_brain", lambda: RestStub())
+    monkeypatch.setenv("YO_CHAT_STREAM_FALLBACK", "force")
+    monkeypatch.setattr(webui, "chat_store", ChatSessionStore())
+
+    async def _noop(*_args, **_kwargs):  # type: ignore[return-value]
+        return None
+
+    monkeypatch.setattr(webui.broadcaster, "start", _noop)
+    monkeypatch.setattr(webui.broadcaster, "stop", _noop)
+
+    with TestClient(webui.app) as client:
+        response = client.post(
+            "/api/chat",
+            json={
+                "namespace": "default",
+                "message": "ping",
+                "session_id": "rest-fallback",
+                "stream": True,
+            },
+        )
+    payload = response.json()
+    assert payload["stream"] is False
+    assert payload["reply"] == "Fallback reply"

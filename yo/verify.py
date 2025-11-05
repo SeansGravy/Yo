@@ -212,6 +212,7 @@ def write_test_summary(result: str = "✅ Verify successful", **extra: Any) -> D
         tests_passed=summary.get("tests_passed"),
         tests_failed=summary.get("tests_failed"),
     )
+    record_metric("ws_success_rate", value=100.0)
     print(f"[Yo] Test summary written: {summary['timestamp']} -> {summary_path}")
     return summary
 

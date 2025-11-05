@@ -9,6 +9,8 @@ requests
 chardet>=5.0
 pytest
 pytest-asyncio
+httpx
+websockets
 
 # --- LangChain stack ---
 langchain

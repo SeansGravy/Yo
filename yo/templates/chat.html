@@ -107,6 +107,18 @@
         color: #52606d;
         min-height: 1.2rem;
       }
+      .debug-banner {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.6rem 0.8rem;
+        border-radius: 8px;
+        background: #fef3c7;
+        color: #92400e;
+        font-size: 0.9rem;
+      }
+      .debug-banner.active {
+        display: block;
+      }
       @media (prefers-color-scheme: dark) {
         body {
           background: #111827;
@@ -135,6 +147,10 @@
         header span {
           color: #94a3b8;
         }
+        .debug-banner {
+          background: #422006;
+          color: #fef3c7;
+        }
       }
     </style>
   </head>
@@ -152,6 +168,7 @@
         <button type="button" class="secondary" id="new-session">New Session</button>
       </div>
     </header>
+    <div id="debug-log" class="debug-banner"></div>
 
     <main>
       <div id="messages"></div>
@@ -172,12 +189,26 @@
       let chatSocket = null;
       let pendingAssistantEl = null;
       let streamTokenCount = 0;
+      const debugEnabled = new URLSearchParams(window.location.search).get('debug') === '1';
+      const debugBanner = document.getElementById('debug-log');
 
       const messagesEl = document.getElementById('messages');
       const namespaceInput = document.getElementById('namespace-input');
       const messageInput = document.getElementById('message-input');
       const statusEl = document.getElementById('status');
       const sendButton = document.getElementById('send-button');
+
+      function updateDebug(message) {
+        if (!debugEnabled || !debugBanner) return;
+        debugBanner.textContent = message;
+        debugBanner.classList.add('active');
+      }
+
+      function clearDebug() {
+        if (!debugEnabled || !debugBanner) return;
+        debugBanner.textContent = '';
+        debugBanner.classList.remove('active');
+      }
 
       function generateSessionId() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') {
@@ -249,6 +280,7 @@
         chatSocket = new WebSocket(wsUrl);
         chatSocket.onopen = () => {
           statusEl.textContent = '';
+          updateDebug('WebSocket connected');
         };
         chatSocket.onmessage = (event) => {
           try {
@@ -259,7 +291,16 @@
           }
         };
         chatSocket.onerror = () => {
-          statusEl.textContent = '⚠️ Chat stream disconnected.';
+          if (debugEnabled) {
+            updateDebug('WebSocket error: chat stream disconnected');
+          } else {
+            statusEl.textContent = '⚠️ Chat stream disconnected.';
+          }
+        };
+        chatSocket.onclose = () => {
+          if (debugEnabled) {
+            updateDebug('WebSocket closed');
+          }
         };
       }
 
@@ -348,8 +389,13 @@
             }
           }
           statusEl.textContent = '';
+          clearDebug();
         } catch (error) {
-          statusEl.textContent = `❌ ${error}`;
+          if (debugEnabled) {
+            updateDebug(`Error: ${error}`);
+          } else {
+            statusEl.textContent = `❌ ${error}`;
+          }
           if (pendingAssistantEl) {
             pendingAssistantEl.textContent = String(error);
             pendingAssistantEl = null;

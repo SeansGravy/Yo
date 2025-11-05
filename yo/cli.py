@@ -88,6 +88,7 @@ LOG_KINDS = {
     "events": EVENT_LOG_DIR,
     "chat": CHAT_DAILY_DIR,
     "shell": SHELL_LOG_DIR,
+    "ws": Path("data/logs/ws_errors.log"),
 }
 
 
@@ -150,11 +151,14 @@ def _parse_iso8601(value: str | None) -> datetime | None:
 
 
 def _latest_log_path(kind: str) -> Path | None:
-    directory = LOG_KINDS.get(kind)
-    if directory is None:
+    path_hint = LOG_KINDS.get(kind)
+    if path_hint is None:
         return None
+    path_hint = Path(path_hint)
+    if path_hint.suffix:
+        return path_hint if path_hint.exists() else None
     candidates = []
-    for path in directory.glob("*.jsonl"):
+    for path in path_hint.glob("*.jsonl"):
         if not path.is_file():
             continue
         try:
@@ -1232,6 +1236,21 @@ def _run_health_monitor(json_output: bool) -> None:
         pass
     result["log_path"] = str(monitor_path)
 
+    metrics_snapshot = summarize_since("7d")
+    ws_stats = (metrics_snapshot.get("types") or {}).get("ws_success_rate", {})
+    ws_field = (ws_stats.get("fields") or {}).get("value") or {}
+    ws_rate = ws_field.get("avg")
+    result["ws_success_rate"] = ws_rate
+    if ws_rate is not None:
+        if ws_rate < 95:
+            status = "fail"
+            reasons.append(f"WebSocket success rate below threshold ({ws_rate:.1f}%).")
+        elif ws_rate < 98 and status == "ok":
+            status = "warn"
+            reasons.append(f"WebSocket success rate trending down ({ws_rate:.1f}%).")
+
+    result["status"] = status
+
     record_metric(
         "health",
         status=status,
@@ -1287,6 +1306,15 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
     recommendations = generate_recommendations()
     payload["recommendations"] = recommendations
 
+    metrics_snapshot = summarize_since("7d")
+    ws_stats = (metrics_snapshot.get("types") or {}).get("ws_success_rate", {})
+    ws_field = (ws_stats.get("fields") or {}).get("value") or {}
+    ws_rate = ws_field.get("avg")
+    payload["ws_success_rate"] = ws_rate
+
+    if ws_rate is not None and ws_rate < 95:
+        payload.setdefault("alerts", []).append(f"WebSocket success rate {ws_rate:.1f}%")
+
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2))
         return
@@ -1331,6 +1359,11 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
                 print(f"     {detail}")
     else:
         print("\nOptimisation suggestions: none")
+
+    if ws_rate is not None:
+        print(f"\nWebSocket success rate (7d): {ws_rate:.1f}%")
+        if ws_rate < 95:
+            print("   ⚠️  Below target. Inspect `yo logs tail --ws` for details.")
 
 
 def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) -> None:

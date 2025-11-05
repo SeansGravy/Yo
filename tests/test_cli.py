@@ -461,6 +461,13 @@ def test_handle_logs_tail_json_payload(tmp_path: Path, monkeypatch: pytest.Monke
     assert payload["log_path"].endswith("chat_20250102.jsonl")
 
 
+def test_handle_logs_tail_ws_no_logs(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    cli._handle_logs_tail(argparse.Namespace(log_type="ws", lines=5, json=False), None)
+    output = capsys.readouterr().out
+    assert "No ws logs" in output
+
+
 def test_health_monitor_success_creates_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     now = datetime.now(timezone.utc)
     summary = {

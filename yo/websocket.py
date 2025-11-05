@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, List, Sequence, Set
 
 from fastapi import WebSocket
 
 from yo.events import publish_event
+from yo.logging_utils import get_logger
 
 try:  # pragma: no cover - watchfiles optional
     from watchfiles import awatch
@@ -18,6 +20,20 @@ except ImportError:  # pragma: no cover
 
 
 PayloadBuilder = Callable[[], dict | Awaitable[dict]]
+
+LOGGER = get_logger(__name__)
+WS_ERROR_LOG = Path("data/logs/ws_errors.log")
+
+
+def _log_ws_error(message: str) -> None:
+    try:
+        WS_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        with WS_ERROR_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"{timestamp} {message}\n")
+    except OSError:
+        pass
+    LOGGER.warning("WebSocket broadcast failure: %s", message)
 
 
 class UpdateBroadcaster:
@@ -100,6 +116,7 @@ class UpdateBroadcaster:
             try:
                 await websocket.send_text(message)
             except Exception:  # pragma: no cover - network failure
+                _log_ws_error(f"broadcast to {getattr(websocket, 'client', 'unknown')} failed")
                 stale.append(websocket)
         for ws in stale:
             await self.disconnect(ws)
