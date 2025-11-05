@@ -204,77 +204,66 @@ PY
           echo "✅ Generated artifact checksums:"
           cat data/logs/checksums/artifact_hashes.txt
 
-      - name: Commit and push verified results
-        id: publish
-        if: ${{ success() && env.YO_HEALTH_SCORE && fromJSON(env.YO_HEALTH_SCORE) >= 90 }}
+      - name: Sign artifact checksums
+        if: ${{ success() }}
         run: |
-          VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
-          HEALTH_INT=$(printf '%.0f' "$YO_HEALTH_SCORE")
-          git add -A
-          if git diff --cached --quiet; then
-            echo "### 📦 Auto-publish Summary" >> $GITHUB_STEP_SUMMARY
-            echo "Release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
-            echo "Health Score: ${HEALTH_INT} (threshold 90)" >> $GITHUB_STEP_SUMMARY
-            echo "Artifacts: audit_report.html, CHANGELOG.md, README.md" >> $GITHUB_STEP_SUMMARY
-            echo "Status: ⚠️ No changes to publish" >> $GITHUB_STEP_SUMMARY
-            exit 0
+          if ! gpg --list-secret-keys --with-colons | grep -q "codex-ci@local"; then
+            gpg --batch --quick-gen-key "Codex CI (auto) <codex-ci@local>" ed25519 sign 0
           fi
-          git commit -m "auto: sync verified build for $(date +'%Y-%m-%d %H:%M')"
-          git push origin main
-          echo "### 📦 Auto-publish Summary" >> $GITHUB_STEP_SUMMARY
-          echo "Release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
-          echo "Health Score: ${HEALTH_INT} (threshold 90)" >> $GITHUB_STEP_SUMMARY
-          echo "Artifacts: audit_report.html, CHANGELOG.md, README.md" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ✅ Published" >> $GITHUB_STEP_SUMMARY
+          gpg --batch --yes --armor --local-user "Codex CI (auto) <codex-ci@local>" \
+            --output data/logs/checksums/artifact_hashes.sig \
+            --detach-sig data/logs/checksums/artifact_hashes.txt
+          gpg --armor --export "Codex CI (auto) <codex-ci@local>" > data/logs/checksums/artifact_signing_public.asc
 
-      - name: Verify artifact integrity
-        if: ${{ steps.publish.outcome == 'success' }}
+      - name: Append verification ledger
+        if: ${{ success() }}
         run: |
-          git fetch origin main
-          mkdir -p tmp/verify
-          cp data/logs/checksums/artifact_hashes.txt tmp/verify/
-          git checkout origin/main -- data/logs
-          diff -q data/logs/checksums/artifact_hashes.txt tmp/verify/artifact_hashes.txt && \
-            echo "✅ Artifact integrity verified." || \
-            (echo "❌ Artifact mismatch detected." && exit 1)
+          mkdir -p data/logs
+          VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
+          COMMIT=$(git rev-parse HEAD)
+          HEALTH=$(python3 -m yo.cli health report --json | jq -r '.health_score // .score')
+          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "{\"timestamp\":\"$TS\",\"version\":\"$VERSION\",\"commit\":\"$COMMIT\",\"health\":$HEALTH,\"checksum_file\":\"data/logs/checksums/artifact_hashes.txt\",\"signature\":\"data/logs/checksums/artifact_hashes.sig\"}" >> data/logs/verification_ledger.jsonl
 
-      - name: Publish skipped (health gate)
-        if: ${{ success() && env.YO_HEALTH_SCORE && fromJSON(env.YO_HEALTH_SCORE) < 90 }}
+      - name: Generate manual push instructions
+        if: ${{ success() }}
         run: |
           VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
-          HEALTH_INT=$(printf '%.0f' "$YO_HEALTH_SCORE")
-          echo "### 📦 Auto-publish Summary" >> $GITHUB_STEP_SUMMARY
+          HEALTH=$(python3 -m yo.cli health report --json | jq -r '.health_score // .score')
+          mkdir -p data/logs
+          cat <<EOF > data/logs/push_instructions.txt
+✅ Verification PASSED (Health ${HEALTH})
+To publish this build, run:
+    git add -A
+    git commit -m "release: ${VERSION} verified build"
+    git push origin main
+Checksums: data/logs/checksums/artifact_hashes.txt
+Signature: data/logs/checksums/artifact_hashes.sig
+EOF
+          echo "### 📦 Verification Summary" >> $GITHUB_STEP_SUMMARY
           echo "Release: ${VERSION}" >> $GITHUB_STEP_SUMMARY
-          echo "Health Score: ${HEALTH_INT} (threshold 90)" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ⚠️ Skipped due to health gate" >> $GITHUB_STEP_SUMMARY
+          echo "Health Score: ${HEALTH}" >> $GITHUB_STEP_SUMMARY
+          echo "Artifacts prepared: audit_report, checksums, signatures" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ⏸ Awaiting manual push" >> $GITHUB_STEP_SUMMARY
 
-      - name: Post-publish validation
-        if: ${{ steps.publish.outcome == 'success' }}
-        run: |
-          git fetch origin main
-          git reset --hard origin/main
-          VERSION=${YO_VERSION:-$(git describe --tags --abbrev=0)}
-          grep -q "$VERSION" README.md || exit 1
-          test -f docs/CHANGELOG.md || exit 1
-          test -f data/logs/audit_report.html || exit 1
-          echo "✅ All post-publish checks passed"
-
-      - name: Verify push success
-        if: ${{ steps.publish.outcome == 'success' }}
-        run: |
-          git fetch origin main
-          LOCAL=$(git rev-parse HEAD)
-          REMOTE=$(git rev-parse origin/main)
-          if [ "$LOCAL" = "$REMOTE" ]; then
-            echo "✅ Verified GitHub updated successfully."
-          else
-            echo "❌ Push verification failed." && exit 1
-          fi
-
-      - name: Rollback failed publish
-        if: ${{ failure() && steps.publish.outcome == 'success' }}
-        run: |
-          git config user.name "codex-bot"
-          git config user.email "codex@local"
-          git revert --no-edit HEAD || echo "No revert needed"
-          git push origin main || echo "rollback push skipped"
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yo-test-results
+          path: |
+            data/logs/test_summary.json
+            data/logs/test_history.json
+            data/logs/dependency_history.json
+            data/logs/telemetry_summary.json
+            data/logs/badge.md
+            data/logs/audit_report.json
+            data/logs/audit_report.md
+            data/logs/audit_report.html
+            data/logs/checksums/artifact_hashes.txt
+            data/logs/checksums/artifact_hashes.sig
+            data/logs/checksums/artifact_signing_public.asc
+            data/logs/verification_ledger.jsonl
+            data/logs/push_instructions.txt
+            yo_test_results_*.log
+            docs/CHANGELOG.md

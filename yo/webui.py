@@ -233,6 +233,25 @@ def api_status() -> JSONResponse:
             }
         )
 
+    verification_info: dict[str, Any] = {}
+    ledger_path = Path("data/logs/verification_ledger.jsonl")
+    signature_path = Path("data/logs/checksums/artifact_hashes.sig")
+    if ledger_path.exists():
+        try:
+            ledger_lines = [line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if ledger_lines:
+                latest = json.loads(ledger_lines[-1])
+                verification_info = {
+                    "version": latest.get("version"),
+                    "commit": latest.get("commit"),
+                    "health": latest.get("health"),
+                    "timestamp": latest.get("timestamp"),
+                    "checksum_file": latest.get("checksum_file"),
+                    "signature": str(signature_path) if signature_path.exists() else latest.get("signature"),
+                }
+        except json.JSONDecodeError:
+            verification_info = {}
+
     ingestion_enabled = (
         brain_available
         and backends.milvus.available
@@ -268,6 +287,7 @@ def api_status() -> JSONResponse:
         "warning": warning,
         "drift_window": DRIFT_WINDOW_LABEL,
         "timestamp": datetime.utcnow().isoformat(),
+        "verification": verification_info,
     }
 
     return JSONResponse(content=payload)
@@ -280,6 +300,16 @@ def dashboard(_: Request) -> HTMLResponse:
     dependencies = load_dependency_history(limit=5)
     trend = compute_trend(history, days=7)
     telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
+    ledger_entry: dict[str, Any] | None = None
+    signature_path = Path("data/logs/checksums/artifact_hashes.sig")
+    ledger_path = Path("data/logs/verification_ledger.jsonl")
+    if ledger_path.exists():
+        try:
+            ledger_lines = [line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if ledger_lines:
+                ledger_entry = json.loads(ledger_lines[-1])
+        except json.JSONDecodeError:
+            ledger_entry = None
 
     status_line = "Unknown"
     if summary:
@@ -367,6 +397,28 @@ def dashboard(_: Request) -> HTMLResponse:
     health_score = telemetry_summary.get("health_score") if telemetry_summary else None
     health_section = f"<section><h2>Health Overview</h2><ul><li>Health score: {health_score if health_score is not None else 'n/a'}</li><li>Drift window: {DRIFT_WINDOW_LABEL}</li></ul></section>"
 
+    if ledger_entry:
+        signature_display = str(signature_path) if signature_path.exists() else ledger_entry.get("signature", "n/a")
+        verification_block = f"""
+        <section>
+          <h2>Signed Verification</h2>
+          <ul>
+            <li>Version: {ledger_entry.get('version', 'unknown')}</li>
+            <li>Commit: {ledger_entry.get('commit', 'unknown')}</li>
+            <li>Health: {ledger_entry.get('health', 'n/a')}</li>
+            <li>Checksum: {ledger_entry.get('checksum_file', 'n/a')}</li>
+            <li>Signature: {signature_display}</li>
+          </ul>
+        </section>
+        """
+    else:
+        verification_block = """
+        <section>
+          <h2>Signed Verification</h2>
+          <p>No signed verification recorded yet.</p>
+        </section>
+        """
+
     html = f"""
     <html>
       <head>
@@ -386,6 +438,7 @@ def dashboard(_: Request) -> HTMLResponse:
           <p>{status_line}</p>
         </section>
         {health_section}
+        {verification_block}
         <section>
           <h2>Recent Trend (last {len(trend)} runs)</h2>
           <table>

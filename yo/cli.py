@@ -1180,6 +1180,17 @@ def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> N
     trend = compute_trend(history, days=7)
     telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
     health_score = compute_health_score(history, telemetry_summary)
+    ledger_entry: Dict[str, Any] | None = None
+    ledger_path = Path("data/logs/verification_ledger.jsonl")
+    if ledger_path.exists():
+        try:
+            ledger_lines = [line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if ledger_lines:
+                ledger_entry = json.loads(ledger_lines[-1])
+        except json.JSONDecodeError:
+            ledger_entry = None
+    checksum_file_path = Path("data/logs/checksums/artifact_hashes.txt")
+    signature_path = Path("data/logs/checksums/artifact_hashes.sig")
 
     print("🖥️  Yo Developer Dashboard\n")
 
@@ -1247,6 +1258,15 @@ def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> N
     if health_score is not None:
         print(f"\nOverall health score: {health_score:.1f}/100")
 
+    if ledger_entry:
+        print("\nSigned Verification:")
+        print(f"   • Version: {ledger_entry.get('version', 'unknown')}")
+        print(f"   • Commit: {ledger_entry.get('commit', 'unknown')}")
+        print(f"   • Health: {ledger_entry.get('health', 'n/a')}")
+        print(f"   • Checksum: {ledger_entry.get('checksum_file', checksum_file_path)}")
+        signature_display = str(signature_path) if signature_path.exists() else ledger_entry.get("signature", "n/a")
+        print(f"   • Signature: {signature_display}")
+
 
 def _handle_system_clean(args: argparse.Namespace, __: YoBrain | None = None) -> None:
     removed = system_clean(dry_run=args.dry_run, older_than_days=args.older_than)
@@ -1279,6 +1299,42 @@ def _handle_system_restore(args: argparse.Namespace, __: YoBrain | None = None) 
         print(f"   • {path}")
 
 
+def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    ledger_path = Path("data/logs/verification_ledger.jsonl")
+    if not ledger_path.exists():
+        print("ℹ️  No verification ledger entries recorded yet.")
+        return
+
+    lines = [line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        print("ℹ️  Verification ledger is currently empty.")
+        return
+
+    entries: list[dict[str, Any]] = []
+    for raw in reversed(lines[-10:]):
+        try:
+            entries.append(json.loads(raw))
+        except json.JSONDecodeError:
+            continue
+
+    if not entries:
+        print("ℹ️  Verification ledger entries could not be parsed.")
+        return
+
+    print("🧾 Verification Ledger (most recent first)\n")
+    for entry in entries:
+        timestamp = entry.get("timestamp", "unknown")
+        version = entry.get("version", "unknown")
+        commit = entry.get("commit", "unknown")
+        health = entry.get("health", "n/a")
+        checksum_file = entry.get("checksum_file", "-")
+        signature = entry.get("signature", "-")
+        print(f"• {timestamp} — version {version} @ {commit}")
+        print(f"   Health: {health}")
+        print(f"   Checksum file: {checksum_file}")
+        print(f"   Signature: {signature}")
+
+
 def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None) -> None:
     if brain is None:
         brain = YoBrain()
@@ -1297,6 +1353,11 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
 
     lifecycle_events = load_lifecycle_history(limit=25)
     snapshots = list_snapshots(limit=5)
+
+    checksums_dir = logs_dir / "checksums"
+    signed_checksum_path = checksums_dir / "artifact_hashes.sig"
+    checksum_file_path = checksums_dir / "artifact_hashes.txt"
+    ledger_path = logs_dir / "verification_ledger.jsonl"
 
     audit_namespaces: list[dict[str, Any]] = []
     for name, stats in sorted(namespace_stats.items()):
@@ -1328,6 +1389,10 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
             }
         )
 
+    checksum_file_str = str(checksum_file_path) if checksum_file_path.exists() else None
+    signed_checksum_str = str(signed_checksum_path) if signed_checksum_path.exists() else None
+    ledger_path_str = str(ledger_path) if ledger_path.exists() else None
+
     audit_payload: dict[str, Any] = {
         "generated_at": datetime.utcnow().isoformat(),
         "health": {
@@ -1351,6 +1416,12 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
             "audit_html": str(logs_dir / "audit_report.html"),
         },
     }
+    if checksum_file_str:
+        audit_payload["checksum_file"] = checksum_file_str
+    if signed_checksum_str:
+        audit_payload["signed_checksum"] = signed_checksum_str
+    if ledger_path_str:
+        audit_payload["ledger_entry"] = ledger_path_str
 
     audit_json_path = logs_dir / "audit_report.json"
     audit_json_path.write_text(json.dumps(audit_payload, indent=2), encoding="utf-8")
@@ -1381,6 +1452,12 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
             )
     else:
         lines.append("No namespaces found.")
+
+    if checksum_file_str or signed_checksum_str or ledger_path_str:
+        lines.append("\n## Signed Verification")
+        lines.append(f"- Checksum file: {checksum_file_str or 'n/a'}")
+        lines.append(f"- Signature: {signed_checksum_str or 'n/a'}")
+        lines.append(f"- Ledger: {ledger_path_str or 'n/a'}")
 
     lines.append("\n## Dependencies")
     if dependency_events:
@@ -1445,6 +1522,12 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
     _rich_print(f" - JSON: {audit_json_path}")
     _rich_print(f" - Markdown: {audit_md_path}")
     _rich_print(f" - HTML: {audit_html_path}")
+    if checksum_file_str:
+        _rich_print(f" - Checksum: {checksum_file_str}")
+    if signed_checksum_str:
+        _rich_print(f" - Signature: {signed_checksum_str}")
+    if ledger_path_str:
+        _rich_print(f" - Ledger: {ledger_path_str}")
 
     if console and Table and audit_namespaces:
         table = Table(title="Namespace Snapshot")
@@ -1463,6 +1546,15 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
                 alerts,
             )
         console.print(table)
+
+    if checksum_file_str or signed_checksum_str or ledger_path_str:
+        print("\nSigned verification artifacts:")
+        if checksum_file_str:
+            print(f"   • Checksum: {checksum_file_str}")
+        if signed_checksum_str:
+            print(f"   • Signature: {signed_checksum_str}")
+        if ledger_path_str:
+            print(f"   • Ledger: {ledger_path_str}")
 
 def _add_ns_options(parser: argparse.ArgumentParser) -> None:
     default_ns = _active_namespace_default()
@@ -1663,7 +1755,12 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parser.set_defaults(handler=_handle_compact)
 
     verify_parser = _add_top_level("verify", help_text="Run the regression test suite", category="Validation")
-    verify_parser.set_defaults(handler=run_test)
+    verify_parser.set_defaults(handler=run_test, verify_command=None)
+    verify_sub = verify_parser.add_subparsers(dest="verify_command")
+    verify_sub.required = False
+
+    verify_ledger = verify_sub.add_parser("ledger", help="Show recent verification ledger entries", description="Display verification ledger entries")
+    verify_ledger.set_defaults(handler=_handle_verify_ledger)
 
     doctor_parser = _add_top_level("doctor", help_text="Diagnose common local setup issues", category="Validation")
     doctor_parser.set_defaults(handler=run_doctor)

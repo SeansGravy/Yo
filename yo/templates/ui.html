@@ -188,6 +188,10 @@
       <div id="health-summary" class="health-summary">Loading…</div>
     </section>
     <section>
+      <h2>Signed Verification</h2>
+      <div id="verification-summary">No signed verification recorded yet.</div>
+    </section>
+    <section>
       <h2>Namespaces</h2>
       <table id="namespace-table">
         <thead>
@@ -309,6 +313,31 @@
         `;
       }
 
+      function renderVerification(verification) {
+        const container = document.getElementById('verification-summary');
+        if (!container) {
+          return;
+        }
+        if (!verification || Object.keys(verification).length === 0) {
+          container.textContent = 'No signed verification recorded yet.';
+          return;
+        }
+        const version = verification.version || 'unknown';
+        const commit = verification.commit || 'unknown';
+        const health = verification.health !== undefined && verification.health !== null ? verification.health : 'n/a';
+        const checksum = verification.checksum_file || 'n/a';
+        const signature = verification.signature || 'n/a';
+        const timestamp = verification.timestamp ? new Date(verification.timestamp).toLocaleString() : '—';
+        container.innerHTML = `
+          <p><strong>Version:</strong> ${version}</p>
+          <p><strong>Commit:</strong> ${commit}</p>
+          <p><strong>Health:</strong> ${health}</p>
+          <p><strong>Checksum:</strong> ${checksum}</p>
+          <p><strong>Signature:</strong> ${signature}</p>
+          <p><strong>Timestamp:</strong> ${timestamp}</p>
+        `;
+      }
+
       function renderNamespaces(namespaces, driftWindow) {
         const tbody = document.querySelector('#namespace-table tbody');
         tbody.innerHTML = '';
@@ -394,6 +423,7 @@
           const data = await response.json();
           renderBackends(data.backends);
           renderHealth(data.health);
+          renderVerification(data.verification);
           renderNamespaces(data.namespaces, data.drift_window);
           updateIngestionState(data.ingestion);
           updateWarningBanner(data.warning);

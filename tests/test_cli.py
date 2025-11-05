@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -193,6 +194,36 @@ def test_handle_report_audit_writes_files(tmp_path: Path, monkeypatch: pytest.Mo
         cli.console = previous_console
 
 
+def test_handle_verify_ledger_prints_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    data_dir = tmp_path / "data/logs"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    ledger_path = data_dir / "verification_ledger.jsonl"
+    entries = [
+        {
+            "timestamp": "2025-01-01T00:00:00Z",
+            "version": "v-test",
+            "commit": "abc123",
+            "health": 95.0,
+            "checksum_file": "data/logs/checksums/artifact_hashes.txt",
+            "signature": "data/logs/checksums/artifact_hashes.sig",
+        },
+        {
+            "timestamp": "2025-01-02T00:00:00Z",
+            "version": "v-test2",
+            "commit": "def456",
+            "health": 96.0,
+            "checksum_file": "data/logs/checksums/artifact_hashes.txt",
+            "signature": "data/logs/checksums/artifact_hashes.sig",
+        },
+    ]
+    ledger_path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    cli._handle_verify_ledger(argparse.Namespace(), None)
+
+    output = capsys.readouterr().out
+    assert "v-test2" in output
+    assert "def456" in output
 def test_telemetry_analyze_release(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(
         cli,
