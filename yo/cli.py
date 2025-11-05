@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import shutil
 from datetime import datetime, timedelta
 from statistics import mean
 from importlib import metadata as importlib_metadata
@@ -184,6 +186,70 @@ def _expand_aliases(argv: Sequence[str]) -> list[str]:
     if not expansion:
         return list(argv)
     return [argv[0], *expansion, *argv[2:]]
+
+
+def _parse_gpg_signer(output: str) -> str | None:
+    match = re.search(r"Good signature from \"([^\"]+)\"", output)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _verify_signature_artifacts() -> dict[str, Any]:
+    checksum_path = Path("data/logs/checksums/artifact_hashes.txt")
+    signature_path = Path("data/logs/checksums/artifact_hashes.sig")
+    key_path = Path("data/logs/checksums/artifact_signing_public.asc")
+    result: dict[str, Any] = {
+        "success": False,
+        "message": "",
+        "signer": None,
+        "checksum": str(checksum_path),
+        "signature": str(signature_path),
+    }
+
+    if not checksum_path.exists() or not signature_path.exists():
+        result["message"] = "Required checksum or signature file is missing."
+        return result
+
+    if shutil.which("gpg") is None:
+        result["message"] = "gpg executable not found. Install GnuPG to verify signatures."
+        return result
+
+    env = os.environ.copy()
+    with tempfile.TemporaryDirectory() as gnupg_home:
+        env["GNUPGHOME"] = gnupg_home
+        # Suppress trust warnings
+        env.setdefault("GPG_TTY", "")
+
+        if key_path.exists():
+            import_proc = subprocess.run(
+                ["gpg", "--batch", "--yes", "--import", str(key_path)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            if import_proc.returncode != 0:
+                result["message"] = import_proc.stderr or import_proc.stdout or "Failed to import signing key."
+                return result
+
+        verify_proc = subprocess.run(
+            ["gpg", "--batch", "--verify", str(signature_path), str(checksum_path)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        output = "".join(filter(None, [verify_proc.stdout, verify_proc.stderr]))
+        signer = _parse_gpg_signer(output)
+        result.update(
+            {
+                "success": verify_proc.returncode == 0,
+                "signer": signer,
+                "message": output.strip(),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
+        return result
 
 
 def _format_timestamp(raw: Optional[str]) -> str:
@@ -1299,6 +1365,87 @@ def _handle_system_restore(args: argparse.Namespace, __: YoBrain | None = None) 
         print(f"   • {path}")
 
 
+def _handle_verify_signature(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    result = _verify_signature_artifacts()
+    payload = {
+        "success": result.get("success", False),
+        "signer": result.get("signer"),
+        "message": result.get("message"),
+        "checksum": result.get("checksum"),
+        "signature": result.get("signature"),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    if payload["success"]:
+        signer = payload["signer"] or "unknown signer"
+        print(f"✅ Signature valid ({signer})")
+    else:
+        print("❌ Signature verification failed.")
+        message = payload.get("message")
+        if message:
+            print(message)
+
+
+def _handle_verify_clone(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    signature_result = _verify_signature_artifacts()
+    clone_payload: dict[str, Any] = {
+        "signature": signature_result,
+        "checksum_matches_remote": None,
+        "remote_error": None,
+    }
+
+    checksum_path = Path("data/logs/checksums/artifact_hashes.txt")
+    remote_text = None
+    if checksum_path.exists() and shutil.which("git"):
+        fetch_proc = subprocess.run(
+            ["git", "fetch", "origin", "main"],
+            capture_output=True,
+            text=True,
+        )
+        if fetch_proc.returncode != 0:
+            clone_payload["remote_error"] = fetch_proc.stderr or fetch_proc.stdout
+        else:
+            show_proc = subprocess.run(
+                ["git", "show", "origin/main:data/logs/checksums/artifact_hashes.txt"],
+                capture_output=True,
+                text=True,
+            )
+            if show_proc.returncode == 0:
+                remote_text = show_proc.stdout
+            else:
+                clone_payload["remote_error"] = show_proc.stderr or show_proc.stdout
+
+    if remote_text is not None and checksum_path.exists():
+        local_text = checksum_path.read_text(encoding="utf-8")
+        clone_payload["checksum_matches_remote"] = local_text.strip() == remote_text.strip()
+
+    if getattr(args, "json", False):
+        print(json.dumps(clone_payload, indent=2))
+        return
+
+    if signature_result.get("success"):
+        signer = signature_result.get("signer") or "unknown signer"
+        print(f"✅ Signature valid ({signer})")
+    else:
+        print("❌ Signature verification failed.")
+        message = signature_result.get("message")
+        if message:
+            print(message)
+
+    matches_remote = clone_payload["checksum_matches_remote"]
+    if matches_remote is True:
+        print("✅ Local checksum matches origin/main.")
+    elif matches_remote is False:
+        print("❌ Local checksum differs from origin/main.")
+    else:
+        print("ℹ️  Unable to compare checksum against origin/main.")
+        if clone_payload.get("remote_error"):
+            print(clone_payload["remote_error"])
+
+
 def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> None:
     ledger_path = Path("data/logs/verification_ledger.jsonl")
     if not ledger_path.exists():
@@ -1392,6 +1539,7 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
     checksum_file_str = str(checksum_file_path) if checksum_file_path.exists() else None
     signed_checksum_str = str(signed_checksum_path) if signed_checksum_path.exists() else None
     ledger_path_str = str(ledger_path) if ledger_path.exists() else None
+    signature_check = _verify_signature_artifacts()
 
     audit_payload: dict[str, Any] = {
         "generated_at": datetime.utcnow().isoformat(),
@@ -1422,6 +1570,8 @@ def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None)
         audit_payload["signed_checksum"] = signed_checksum_str
     if ledger_path_str:
         audit_payload["ledger_entry"] = ledger_path_str
+    audit_payload["signature_valid"] = signature_check.get("success", False)
+    audit_payload["verification_time"] = signature_check.get("timestamp")
 
     audit_json_path = logs_dir / "audit_report.json"
     audit_json_path.write_text(json.dumps(audit_payload, indent=2), encoding="utf-8")
@@ -1761,6 +1911,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify_ledger = verify_sub.add_parser("ledger", help="Show recent verification ledger entries", description="Display verification ledger entries")
     verify_ledger.set_defaults(handler=_handle_verify_ledger)
+
+    verify_signature_parser = verify_sub.add_parser("signature", help="Validate checksum signature", description="Verify checksum signature authenticity")
+    verify_signature_parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    verify_signature_parser.set_defaults(handler=_handle_verify_signature)
+
+    verify_clone_parser = verify_sub.add_parser("clone", help="Validate signature and remote checksum against origin/main", description="Verify signature and compare checksums with origin")
+    verify_clone_parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    verify_clone_parser.set_defaults(handler=_handle_verify_clone)
 
     doctor_parser = _add_top_level("doctor", help_text="Diagnose common local setup issues", category="Validation")
     doctor_parser.set_defaults(handler=run_doctor)

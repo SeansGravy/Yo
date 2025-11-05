@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -169,6 +170,18 @@ def test_handle_report_audit_writes_files(tmp_path: Path, monkeypatch: pytest.Mo
             }
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_verify_signature_artifacts",
+        lambda: {
+            "success": True,
+            "signer": "Codex CI",
+            "message": "",
+            "checksum": "data/logs/checksums/artifact_hashes.txt",
+            "signature": "data/logs/checksums/artifact_hashes.sig",
+            "timestamp": "2025-01-01T00:00:00Z",
+        },
+    )
     monkeypatch.setattr(cli, "list_snapshots", lambda limit=None: [{"name": "snapshot_test", "created_at": "2025-01-01T00:00:00", "files": [], "hash": "abc", "path": "data/snapshots/snapshot.tar.gz"}])
     monkeypatch.setattr(cli, "load_lifecycle_history", lambda limit=None: [{"timestamp": "2025-01-02T00:00:00", "action": "snapshot", "detail": {"name": "snapshot_test"}}])
 
@@ -224,6 +237,63 @@ def test_handle_verify_ledger_prints_entries(tmp_path: Path, monkeypatch: pytest
     output = capsys.readouterr().out
     assert "v-test2" in output
     assert "def456" in output
+
+
+def test_handle_verify_signature_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_verify_signature_artifacts",
+        lambda: {
+            "success": True,
+            "signer": "Codex CI",
+            "message": "",
+            "checksum": "data/logs/checksums/artifact_hashes.txt",
+            "signature": "data/logs/checksums/artifact_hashes.sig",
+        },
+    )
+
+    cli._handle_verify_signature(argparse.Namespace(json=True), None)
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["success"] is True
+    assert payload["signer"] == "Codex CI"
+
+
+def test_handle_verify_clone_matches_remote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    checksums_dir = tmp_path / "data/logs/checksums"
+    checksums_dir.mkdir(parents=True, exist_ok=True)
+    checksum_path = checksums_dir / "artifact_hashes.txt"
+    checksum_path.write_text("abc123\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli,
+        "_verify_signature_artifacts",
+        lambda: {
+            "success": True,
+            "signer": "Codex CI",
+            "message": "",
+            "checksum": str(checksum_path),
+            "signature": "data/logs/checksums/artifact_hashes.sig",
+        },
+    )
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/git" if cmd == "git" else None)
+
+    def fake_run(args, capture_output=True, text=True, env=None):
+        if list(args[:4]) == ["git", "fetch", "origin", "main"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if list(args[:4]) == ["git", "show", "origin/main:data/logs/checksums/artifact_hashes.txt"]:
+            return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+        raise AssertionError(f"Unexpected command: {args}")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    cli._handle_verify_clone(argparse.Namespace(json=False), None)
+
+    output = capsys.readouterr().out
+    assert "Signature valid" in output
+    assert "matches origin" in output
 def test_telemetry_analyze_release(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(
         cli,

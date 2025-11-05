@@ -246,6 +246,10 @@ EOF
           echo "Artifacts prepared: audit_report, checksums, signatures" >> $GITHUB_STEP_SUMMARY
           echo "Status: ⏸ Awaiting manual push" >> $GITHUB_STEP_SUMMARY
 
+      - name: Verify signature on clone
+        if: ${{ success() }}
+        run: python3 -m yo.cli verify signature --json
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

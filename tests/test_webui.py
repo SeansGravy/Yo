@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
@@ -113,6 +114,18 @@ def dummy_client(monkeypatch: pytest.MonkeyPatch, healthy_backends: BackendSumma
     monkeypatch.setattr(webui, "detect_backends", lambda: healthy_backends)
     monkeypatch.setattr(webui, "get_brain", lambda: dummy)
     monkeypatch.setattr(webui, "MULTIPART_AVAILABLE", True)
+    logs_dir = Path("data/logs")
+    (logs_dir / "checksums").mkdir(parents=True, exist_ok=True)
+    (logs_dir / "checksums" / "artifact_hashes.txt").write_text("hash", encoding="utf-8")
+    (logs_dir / "checksums" / "artifact_hashes.sig").write_text("sig", encoding="utf-8")
+    (logs_dir / "verification_ledger.jsonl").write_text(json.dumps({
+        "timestamp": "2025-01-01T00:00:00Z",
+        "version": "v-ledger",
+        "commit": "abc123",
+        "health": 99.0,
+        "checksum_file": "data/logs/checksums/artifact_hashes.txt",
+        "signature": "data/logs/checksums/artifact_hashes.sig",
+    }) + "\n", encoding="utf-8")
     client = TestClient(webui.app)
     return client, dummy
 
@@ -129,6 +142,7 @@ def test_status_endpoint_reports_namespaces(dummy_client: tuple[TestClient, Dumm
     assert payload["namespaces"][0]["name"] == "default"
     assert "health" in payload
     assert payload["drift_window"] == "7d"
+    assert payload["verification"]["version"] == "v-ledger"
     assert payload["ingestion"]["enabled"] is True
 
 
