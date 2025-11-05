@@ -399,6 +399,8 @@ python3 -m yo.cli health web --host 127.0.0.1 --port 8010 --timeout 5
 * Check `data/logs/ws_errors.log` for WebSocket delivery problems.
 * If the default port is busy, pick a new one (e.g. `--port 8010`). The CLI refuses to start if the port is already bound and logs a clear error instead of hanging.
 * Probe the HTTP and streaming stack directly: `yo health web` confirms `/api/health` is live, `yo health chat` asserts `/api/chat` returns a reply, and `yo health ws` ensures `/ws/chat/<session>` emits a `chat_complete` frame.
+* `/api/chat` always returns a `{type: "chat_message", reply: {text: …}}` payload—even after fallbacks—so the browser visibly closes every turn.
+* `/chat` should return instantly; if `curl http://localhost:8000/chat` hangs, run `yo health web --timeout 5` (fails when `/chat` exceeds 1 s) and inspect `data/logs/web_startup.log` plus `data/logs/chat_timing.jsonl` with `yo telemetry trace --session <id>` for clues.
 * Need to escalate an unresolved chat disconnect? Run `yo logs collect --chat-bug [--har <browser.har>]` to zip startup logs, WebSocket errors, a metrics tail, and any captured HAR files under `data/logs/chat_bug_*.zip`.
 * The end-to-end smoke test (`tests/test_web_e2e_port.py`) starts the server in a subprocess and asserts `/api/health`, `/dashboard`, `/api/chat`, and `/ws/chat/*` all respond. Run it locally with `python3 -m pytest tests/test_web_e2e_port.py -q` to replicate production issues.
 

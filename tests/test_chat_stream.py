@@ -74,6 +74,7 @@ async def test_chat_stream_emits_events(monkeypatch: pytest.MonkeyPatch) -> None
         assert "chat_started" in types
         assert "chat_token" in types
         assert "chat_complete" in types
+        assert "chat_message" in types
         complete_event = next(event for event in events if event.get("type") == "chat_complete")
         assert complete_event["history"][-1]["assistant"] == "Hello world"
     finally:
@@ -111,7 +112,7 @@ async def test_chat_send_emits_message_event() -> None:
             event for event in events if event.get("type") == "chat_message" and event.get("session_id") == session_id
         ]
         assert message_events, "Expected chat_message event to be published."
-        assert message_events[0]["reply"] == "Acknowledged."
+        assert message_events[0]["reply"]["text"] == "Acknowledged."
     finally:
         await bus.unsubscribe(queue)
 
@@ -146,4 +147,5 @@ def test_chat_rest_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
         )
     payload = response.json()
     assert payload["stream"] is False
-    assert payload["reply"] == "Fallback reply"
+    assert payload["reply"]["text"] == "Fallback reply"
+    assert payload["fallback"] is True

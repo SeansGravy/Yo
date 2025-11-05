@@ -101,12 +101,15 @@ scripts/setup_yo_dev.sh
 - `yo logs tail --type events` (or `chat` / `shell`) prints a formatted tail of the latest log; add `--json` for machine-readable output in scripts and CI.
 - `yo health monitor [--json]` evaluates the most recent verification run, health score, and update cadence, writing results to `data/logs/health_monitor.jsonl`. A failing status exits with code 1 so CI or CRON jobs can alert immediately.
 - The hourly GitHub Actions workflow `.github/workflows/health-monitor.yml` runs the same command and uploads the JSONL log, giving the team a rolling audit of system freshness and pass rates.
+- Every chat turn now records emit successes/failures to `data/logs/chat_timing.jsonl`; inspect delivery timelines with `yo telemetry trace --session <id>` when debugging UI silence.
 
 ## 🧯 Troubleshooting the :8000 Hang
 
 - Launch with instrumentation: `python3 -m yo.cli web --debug --port 8010` (or `yo web --debug --port 8010`). Debug mode enables asyncio tracing, faulthandler dumps, and request logging to `data/logs/web_startup.log`.
 - If the server stalls, inspect `data/logs/web_startup.log`, `data/logs/ws_errors.log`, and `data/logs/web_deadlock.dump` for the stuck coroutine.
+- Every `/api/chat` call now returns a `{type: "chat_message", reply: {text: …}}` payload—fallbacks included—so the browser always renders a visible assistant bubble.
 - Quickly verify availability with `yo health web --host 127.0.0.1 --port 8010 --timeout 5`; follow up with `yo health chat` / `yo health ws` to assert `/api/chat` replies and `/ws/chat` streams produce tokens.
+- `/chat` should render immediately. If a plain `curl http://127.0.0.1:8010/chat` hangs or takes >1s, rerun `yo health web` (now checks `/chat` latency) and inspect `data/logs/web_startup.log` + `data/logs/chat_timing.log` for slow renders.
 - Capture a reproducible diagnostics bundle with `yo logs collect --chat-bug [--har <browser.har>]`—the ZIP contains recent startup logs, WebSocket errors, metrics tail, and optional HAR traces under `data/logs/`.
 - The automated smoke test (`tests/test_web_e2e_port.py`) starts the server on a real port, hits `/api/health`, `/dashboard`, `/api/chat`, and `/ws/chat/*`. Run it locally with `python3 -m pytest tests/test_web_e2e_port.py -q` to reproduce environment issues.
 

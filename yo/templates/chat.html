@@ -163,7 +163,7 @@
       <div class="toolbar">
         <label>
           Namespace
-          <input id="namespace-input" type="text" value="default" />
+          <input id="namespace-input" type="text" value="{{ namespace }}" />
         </label>
         <button type="button" class="secondary" id="new-session">New Session</button>
       </div>
@@ -185,11 +185,15 @@
       const chatUrl = '/api/chat';
       const sessionKey = 'yo_chat_session';
       const historyKey = 'yo_chat_history';
+      const initialNamespace = {{ namespace | tojson }};
+      const templateDebugEnabled = {{ 'true' if debug else 'false' }};
       let sessionId = localStorage.getItem(sessionKey) || null;
       let chatSocket = null;
       let pendingAssistantEl = null;
       let streamTokenCount = 0;
-      const debugEnabled = new URLSearchParams(window.location.search).get('debug') === '1';
+      let silentTimer = null;
+      const debugQueryEnabled = new URLSearchParams(window.location.search).get('debug') === '1';
+      const debugEnabled = templateDebugEnabled || debugQueryEnabled;
       const debugBanner = document.getElementById('debug-log');
 
       const messagesEl = document.getElementById('messages');
@@ -242,6 +246,39 @@
 
       function storeHistory(history) {
         localStorage.setItem(historyKey, JSON.stringify({ session_id: sessionId, history }));
+      }
+
+      function extractText(value) {
+        if (!value) {
+          return '';
+        }
+        if (typeof value === 'string') {
+          return value.trim();
+        }
+        if (typeof value === 'object' && value !== null && typeof value.text === 'string') {
+          return value.text.trim();
+        }
+        return '';
+      }
+
+      function startSilentTimer() {
+        if (silentTimer) {
+          clearTimeout(silentTimer);
+        }
+        silentTimer = setTimeout(() => {
+          if (pendingAssistantEl) {
+            pendingAssistantEl.textContent = '[Server silent]';
+          }
+          statusEl.textContent = '⚠️ Server silent';
+        }, 5000);
+      }
+
+      function clearSilentTimer() {
+        if (!silentTimer) {
+          return;
+        }
+        clearTimeout(silentTimer);
+        silentTimer = null;
       }
 
       function appendUserBubble(text) {
@@ -305,7 +342,19 @@
       }
 
       function handleChatEvent(event) {
-        if (!sessionId || event.session_id !== sessionId) {
+        if (debugEnabled) {
+          const preview = extractText(event && event.reply).slice(0, 40);
+          const eventType = event && event.type ? event.type : 'unknown';
+          const eventSession = event && event.session_id ? event.session_id : 'none';
+          console.debug('EVENT', eventType, eventSession, preview.slice(0, 60));
+        }
+        if (event && event.session_id && sessionId && event.session_id !== sessionId) {
+          if (debugEnabled) {
+            console.debug('EVENT-SKIP', event.session_id, sessionId);
+          }
+          return;
+        }
+        if (!event || !event.type) {
           return;
         }
         switch (event.type) {
@@ -325,15 +374,21 @@
             streamTokenCount += (event.token || '').length;
             break;
           case 'chat_complete':
-            pendingAssistantEl = null;
-            streamTokenCount = 0;
-            const history = event.history || [];
-            storeHistory(history);
-            renderHistory(history);
-            if (event.fallback) {
-              statusEl.textContent = 'Fallback reply received.';
-            } else {
-              statusEl.textContent = '';
+            {
+              clearSilentTimer();
+              const replyText = extractText(event.reply);
+              if (pendingAssistantEl && replyText) {
+                pendingAssistantEl.textContent = replyText;
+              } else if (replyText) {
+                appendAssistantBubble(replyText);
+              }
+              pendingAssistantEl = null;
+              streamTokenCount = 0;
+              if (Array.isArray(event.history)) {
+                storeHistory(event.history);
+                renderHistory(event.history);
+              }
+              statusEl.textContent = event.fallback ? 'Fallback reply received.' : '';
             }
             break;
           case 'chat_fallback':
@@ -343,10 +398,24 @@
             statusEl.textContent = 'Fallback reply in progress…';
             break;
           case 'chat_message':
-            // non-streaming completion
-            if (event.history) {
-              storeHistory(event.history);
-              renderHistory(event.history);
+            {
+              clearSilentTimer();
+              const replyText = extractText(event.reply);
+              if (replyText) {
+                if (pendingAssistantEl) {
+                  pendingAssistantEl.textContent = replyText;
+                  pendingAssistantEl = null;
+                } else {
+                  appendAssistantBubble(replyText);
+                }
+              }
+              if (Array.isArray(event.history)) {
+                storeHistory(event.history);
+                renderHistory(event.history);
+              }
+              streamTokenCount = 0;
+              pendingAssistantEl = null;
+              statusEl.textContent = event.fallback ? 'REST fallback reply received.' : '';
             }
             break;
           default:
@@ -368,6 +437,7 @@
           appendUserBubble(content);
           pendingAssistantEl = appendAssistantBubble('');
           streamTokenCount = 0;
+          startSilentTimer();
 
           const response = await fetch(chatUrl, {
             method: 'POST',
@@ -384,38 +454,45 @@
             throw new Error(payload.detail || 'Chat request failed.');
           }
           const payload = await response.json();
-          sessionId = payload.session_id;
-          localStorage.setItem(sessionKey, sessionId);
+          if (payload.session_id) {
+            sessionId = payload.session_id;
+            localStorage.setItem(sessionKey, sessionId);
+          }
           const fallbackUsed = Boolean(payload.fallback);
-          const replyText = (payload.reply || '').trim();
-          if (!payload.stream) {
-            storeHistory(payload.history || []);
-            renderHistory(payload.history || []);
-            if (pendingAssistantEl) {
-              pendingAssistantEl.textContent = replyText;
-              pendingAssistantEl = null;
-              streamTokenCount = 0;
-            }
-            if (fallbackUsed) {
-              statusEl.textContent = 'REST fallback reply received.';
-            }
-          } else {
-            storeHistory(payload.history || []);
-            if (pendingAssistantEl && payload.reply && streamTokenCount === 0) {
-              pendingAssistantEl.textContent = replyText;
-              pendingAssistantEl = null;
-              streamTokenCount = 0;
-              renderHistory(payload.history || []);
-              if (fallbackUsed) {
-                statusEl.textContent = 'REST fallback reply received.';
+          const replyText = extractText(payload.reply);
+          const history = Array.isArray(payload.history) ? payload.history : [];
+          if (history.length) {
+            storeHistory(history);
+            renderHistory(history);
+          }
+            if (!payload.stream && replyText) {
+              if (pendingAssistantEl) {
+                pendingAssistantEl.textContent = replyText;
+                pendingAssistantEl = null;
+              } else {
+                appendAssistantBubble(replyText);
               }
+              streamTokenCount = 0;
+              statusEl.textContent = fallbackUsed ? 'REST fallback reply received.' : '';
+              clearSilentTimer();
+            } else if (replyText && streamTokenCount === 0) {
+              if (pendingAssistantEl) {
+                pendingAssistantEl.textContent = replyText;
+                pendingAssistantEl = null;
+              } else {
+                appendAssistantBubble(replyText);
+              }
+              streamTokenCount = 0;
+              statusEl.textContent = fallbackUsed ? 'REST fallback reply received.' : '';
+              clearSilentTimer();
             }
-          }
-          if (!fallbackUsed) {
-            statusEl.textContent = '';
-          }
-          clearDebug();
+
+            if (!fallbackUsed) {
+              statusEl.textContent = '';
+            }
+            clearDebug();
         } catch (error) {
+          clearSilentTimer();
           if (debugEnabled) {
             updateDebug(`Error: ${error}`);
           } else {
@@ -448,19 +525,22 @@
         localStorage.removeItem(historyKey);
         messagesEl.innerHTML = '';
         statusEl.textContent = 'Started a new session.';
-        connectChatStream();
+        setTimeout(() => connectChatStream(), 0);
       });
 
-      window.addEventListener('load', () => {
+      document.addEventListener('DOMContentLoaded', () => {
+        if (initialNamespace && namespaceInput.value !== initialNamespace) {
+          namespaceInput.value = initialNamespace;
+        }
         if (!sessionId) {
           sessionId = generateSessionId();
           localStorage.setItem(sessionKey, sessionId);
         }
-        connectChatStream();
         const history = loadStoredHistory();
         if (history.length) {
           renderHistory(history);
         }
+        setTimeout(() => connectChatStream(), 0);
       });
     </script>
   </body>

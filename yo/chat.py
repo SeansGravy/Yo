@@ -45,6 +45,10 @@ class ChatSessionStore:
         self._sessions: Dict[str, ChatSession] = {}
         self._lock = threading.RLock()
 
+    @staticmethod
+    def _reply_payload(text: str) -> Dict[str, str]:
+        return {"text": text}
+
     def _new_session(self, namespace: str, session_id: str | None = None) -> ChatSession:
         session_id = session_id or uuid.uuid4().hex
         session = ChatSession(session_id=session_id, namespace=namespace)
@@ -69,6 +73,7 @@ class ChatSessionStore:
         message: str,
         session_id: str | None = None,
         web: bool = False,
+        fallback: bool = False,
     ) -> Tuple[str, str, List[Dict[str, str]], Dict[str, Any]]:
         """Generate a response for ``message`` and update the stored history."""
 
@@ -103,22 +108,37 @@ class ChatSessionStore:
                     "user": message,
                     "assistant": reply_text,
                     "timestamp": session.updated_at,
+                    "fallback": fallback,
                 }
             )
 
+        message_event = {
+            "type": "chat_message",
+            "session_id": session.session_id,
+            "namespace": namespace,
+            "message": message,
+            "reply": self._reply_payload(reply_text),
+            "history": history_snapshot,
+            "fallback": fallback,
+        }
+        publish_event("chat_message", message_event)
         publish_event(
-            "chat_message",
+            "chat_complete",
             {
+                "type": "chat_complete",
                 "session_id": session.session_id,
                 "namespace": namespace,
-                "message": message,
-                "reply": reply_text,
+                "reply": self._reply_payload(reply_text),
+                "history": history_snapshot,
+                "fallback": fallback,
+                "first_token_latency_ms": None,
             },
         )
 
         metadata = {
             "context": reply_data.get("context"),
             "citations": reply_data.get("citations") or [],
+            "fallback_used": fallback,
         }
         return session.session_id, reply_text, history_snapshot, metadata
 
@@ -148,6 +168,7 @@ class ChatSessionStore:
         publish_event(
             "chat_started",
             {
+                "type": "chat_started",
                 "session_id": session.session_id,
                 "namespace": namespace,
                 "message": message,
@@ -189,17 +210,26 @@ class ChatSessionStore:
                     "first_token_latency_ms": first_token_latency_ms,
                     "fallback_used": fallback_used,
                 }
-                publish_event(
-                    "chat_complete",
-                    {
-                        "session_id": session.session_id,
-                        "namespace": namespace,
-                        "reply": reply_text,
-                        "history": history_snapshot,
-                        "fallback": fallback_used,
-                        "first_token_latency_ms": first_token_latency_ms,
-                    },
-                )
+                complete_event = {
+                    "type": "chat_complete",
+                    "session_id": session.session_id,
+                    "namespace": namespace,
+                    "reply": self._reply_payload(reply_text),
+                    "history": history_snapshot,
+                    "fallback": fallback_used,
+                    "first_token_latency_ms": first_token_latency_ms,
+                }
+                publish_event("chat_complete", complete_event)
+                message_event = {
+                    "type": "chat_message",
+                    "session_id": session.session_id,
+                    "namespace": namespace,
+                    "message": message,
+                    "reply": self._reply_payload(reply_text),
+                    "history": history_snapshot,
+                    "fallback": fallback_used,
+                }
+                publish_event("chat_message", message_event)
                 if fallback_used:
                     publish_event(
                         "chat_fallback",
@@ -219,6 +249,7 @@ class ChatSessionStore:
                 publish_event(
                     "chat_token",
                     {
+                        "type": "chat_token",
                         "session_id": session.session_id,
                         "namespace": namespace,
                         "token": token,
@@ -291,21 +322,23 @@ class ChatSessionStore:
                 }
             )
 
-        publish_event(
-            "chat_message",
-            {
-                "session_id": session.session_id,
-                "namespace": namespace,
-                "message": message,
-                "reply": reply_text,
-            },
-        )
+        message_event = {
+            "type": "chat_message",
+            "session_id": session.session_id,
+            "namespace": namespace,
+            "message": message,
+            "reply": self._reply_payload(reply_text),
+            "history": history_snapshot,
+            "fallback": True,
+        }
+        publish_event("chat_message", message_event)
         publish_event(
             "chat_complete",
             {
+                "type": "chat_complete",
                 "session_id": session.session_id,
                 "namespace": namespace,
-                "reply": reply_text,
+                "reply": self._reply_payload(reply_text),
                 "history": history_snapshot,
                 "fallback": True,
                 "first_token_latency_ms": None,
@@ -314,6 +347,7 @@ class ChatSessionStore:
         publish_event(
             "chat_fallback",
             {
+                "type": "chat_fallback",
                 "session_id": session.session_id,
                 "namespace": namespace,
                 "message": message,

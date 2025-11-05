@@ -34,6 +34,10 @@ jobs:
         run: |
           python3 -m yo.cli health chat --timeout 8
 
+      - name: Verify fallback produces text
+        run: |
+          python3 -m yo.cli health chat --timeout 8 --force-fallback
+
       - name: Append summary
         if: always()
         run: |
@@ -72,3 +76,4 @@ jobs:
           path: |
             monitor_output.json
             data/logs/health_monitor.jsonl
+            data/logs/chat_timing.jsonl

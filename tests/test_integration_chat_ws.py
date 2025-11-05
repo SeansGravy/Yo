@@ -63,5 +63,10 @@ def test_chat_ws_stream(monkeypatch):
                 if event.get("type") == "chat_complete":
                     break
 
+    def _reply_text(payload: object) -> str:
+        if isinstance(payload, dict):
+            return str(payload.get("text") or "")
+        return str(payload or "")
+
     assert any(event.get("type") == "chat_complete" for event in messages)
-    assert any("Hello world" in str(event.get("reply", "")) for event in messages)
+    assert any("Hello world" in _reply_text(event.get("reply")) for event in messages)

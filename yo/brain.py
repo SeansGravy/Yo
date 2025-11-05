@@ -1191,7 +1191,7 @@ class YoBrain:
         namespace = namespace or self.active_namespace
         preview = message[:80]
 
-        def _invoke() -> dict[str, Any]:
+        def _invoke() -> Any:
             return self.chat(
                 message=message,
                 namespace=namespace,
@@ -1199,15 +1199,66 @@ class YoBrain:
                 web=web,
             )
 
+        def _normalise_result(result: Any) -> dict[str, Any]:
+            default_text = "[no text generated]"
+            payload: dict[str, Any] = {
+                "text": default_text,
+                "response": default_text,
+                "context": None,
+                "citations": [],
+            }
+            if isinstance(result, dict):
+                payload.update(result)
+                text_candidate = str(payload.get("text") or "").strip()
+                if not text_candidate:
+                    text_candidate = str(payload.get("response") or "").strip()
+                if not text_candidate:
+                    text_candidate = str(payload.get("reply") or "").strip()
+                if not text_candidate:
+                    text_candidate = default_text
+                payload["text"] = text_candidate
+                response_value = str(payload.get("response") or "").strip()
+                payload["response"] = response_value or text_candidate
+                payload["citations"] = payload.get("citations") or []
+                return payload
+            if isinstance(result, str):
+                text_candidate = result.strip() or default_text
+                payload["text"] = text_candidate
+                payload["response"] = text_candidate
+                return payload
+            text_candidate = str(result).strip() or default_text
+            payload["text"] = text_candidate
+            payload["response"] = text_candidate
+            return payload
+
         try:
-            return await asyncio.wait_for(loop.run_in_executor(None, _invoke), timeout=effective_timeout)
+            invoke_future = asyncio.wait_for(loop.run_in_executor(None, _invoke), timeout=effective_timeout)
+            result = await asyncio.shield(invoke_future)
+            return _normalise_result(result)
         except asyncio.TimeoutError:
-            self._logger.warning("Chat timeout reached namespace=%s message=%s", namespace, preview)
+            self._logger.warning("chat_async hit timeout namespace=%s message=%s", namespace, preview)
+            timeout_text = "[timed out waiting for model]"
             return {
-                "response": "[timeout] Yo chat request exceeded the configured limit.",
+                "text": timeout_text,
+                "response": timeout_text,
                 "context": "",
                 "citations": [],
                 "fallback_used": True,
+                "source": "brain.chat_async",
+            }
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._logger.exception("chat_async failed namespace=%s: %s", namespace, exc)
+            failure_text = "[fallback reply unavailable]"
+            return {
+                "text": failure_text,
+                "response": failure_text,
+                "context": "",
+                "citations": [],
+                "fallback_used": True,
+                "source": "brain.chat_async",
+                "error": str(exc),
             }
 
     def chat_stream(

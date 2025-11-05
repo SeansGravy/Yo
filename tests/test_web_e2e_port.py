@@ -117,6 +117,11 @@ def test_web_server_e2e_port(tmp_path: Path) -> None:
 
         ws_messages, chat_result = asyncio.run(_ws_conversation())
         if not any("\"chat_complete\"" in msg for msg in ws_messages):
-            assert chat_result.get("reply"), "REST fallback returned empty reply"
+            reply_payload = chat_result.get("reply")
+            if isinstance(reply_payload, dict):
+                reply_text = (reply_payload.get("text") or "").strip()
+            else:
+                reply_text = str(reply_payload or "").strip()
+            assert reply_text, "REST fallback returned empty reply"
     finally:
         stdout_text, stderr_text = _shutdown()

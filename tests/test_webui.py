@@ -309,7 +309,7 @@ def test_chat_endpoint(dummy_client: tuple[TestClient, DummyBrain]) -> None:
     resp = client.post("/api/chat", json={"namespace": "default", "message": "Hello", "stream": True})
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["reply"].startswith("Echo")
+    assert payload["reply"]["text"].startswith("Echo")
     assert payload["history"][0]["user"] == "Hello"
     assert payload["stream"] is True
 

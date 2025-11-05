@@ -96,6 +96,10 @@ LOG_KINDS = {
     "shell": SHELL_LOG_DIR,
     "ws": Path("data/logs/ws_errors.log"),
 }
+CHAT_PAGE_WARN_THRESHOLD_MS = 1000.0
+CHAT_TIMING_LOG = Path("data/logs/chat_timing.log")
+CHAT_TIMING_JSONL = Path("data/logs/chat_timing.jsonl")
+WS_ERROR_LOG = Path("data/logs/ws_errors.log")
 
 
 def _rich_print(*args: object, style: str | None = None) -> None:
@@ -1173,6 +1177,64 @@ def _handle_telemetry_archives_list(args: argparse.Namespace, __: YoBrain | None
         print(f"   • {entry}")
 
 
+def _handle_telemetry_trace(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    session_id = getattr(args, "session", "").strip()
+    if not session_id:
+        print("❌ --session is required for telemetry trace.")
+        raise SystemExit(1)
+
+    log_path = CHAT_TIMING_JSONL if CHAT_TIMING_JSONL.exists() else CHAT_TIMING_LOG
+    entries: list[dict[str, Any]] = []
+    if log_path.exists():
+        with log_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("session_id") == session_id:
+                    entries.append(payload)
+
+    if not entries:
+        print(f"ℹ️  No chat timing entries recorded for session {session_id}.")
+    else:
+        entries.sort(key=lambda entry: _parse_iso8601(entry.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc))
+        base_ts = _parse_iso8601(entries[0].get("timestamp")) or datetime.fromtimestamp(0, tz=timezone.utc)
+        print("t0_ms,event_type,latency_ms,success,text_len,error")
+        for entry in entries:
+            ts = _parse_iso8601(entry.get("timestamp"))
+            delta_ms = 0.0
+            if ts:
+                delta_ms = (ts - base_ts).total_seconds() * 1000.0
+            event_type = entry.get("event_type") or entry.get("event") or "unknown"
+            latency = entry.get("latency_ms")
+            if latency is None and "elapsed_ms" in entry:
+                latency = entry.get("elapsed_ms")
+            success = entry.get("success")
+            text_len = entry.get("text_len")
+            if text_len is None:
+                text_len = _extract_text_length(entry)
+            error = entry.get("error", "")
+            latency_str = "" if latency is None else f"{latency}"
+            success_str = "" if success is None else str(success)
+            text_len_str = "" if text_len is None else str(text_len)
+            print(f"{delta_ms:.1f},{event_type},{latency_str},{success_str},{text_len_str},{error}")
+
+    if WS_ERROR_LOG.exists():
+        matched_errors = []
+        with WS_ERROR_LOG.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if session_id in line:
+                    matched_errors.append(line.strip())
+        if matched_errors:
+            print("\nws_errors:")
+            for line in matched_errors:
+                print(f"  {line}")
+
+
 def _run_health_monitor(json_output: bool) -> None:
     now = datetime.now(timezone.utc)
     summary = load_test_summary()
@@ -1257,6 +1319,15 @@ def _run_health_monitor(json_output: bool) -> None:
     ws_field = (ws_stats.get("fields") or {}).get("value") or {}
     ws_rate = ws_field.get("avg")
     result["ws_success_rate"] = ws_rate
+    chat_page_stats = (metrics_snapshot.get("types") or {}).get("chat_get", {})
+    chat_page_fields = chat_page_stats.get("fields", {})
+    chat_page_elapsed = (chat_page_fields.get("elapsed_ms") or {})
+    chat_page_avg = chat_page_elapsed.get("avg")
+    chat_page_max = chat_page_elapsed.get("max")
+    if chat_page_avg is not None:
+        result["chat_page_avg_ms"] = chat_page_avg
+    if chat_page_max is not None:
+        result["chat_page_max_ms"] = chat_page_max
     chat_stats = (metrics_snapshot.get("types") or {}).get("chat", {})
     chat_fields = chat_stats.get("fields", {})
     fallback_avg = (chat_fields.get("fallback") or {}).get("avg")
@@ -1281,6 +1352,14 @@ def _run_health_monitor(json_output: bool) -> None:
         elif fallback_avg > 0.1 and status == "ok":
             status = "warn"
             reasons.append(f"Fallback usage elevated ({fallback_avg * 100:.1f}% of chats).")
+    if chat_page_max is not None and chat_page_max > CHAT_PAGE_WARN_THRESHOLD_MS:
+        if chat_page_max > CHAT_PAGE_WARN_THRESHOLD_MS * 1.5:
+            status = "fail"
+        elif status == "ok":
+            status = "warn"
+        reasons.append(
+            f"/chat load time high ({chat_page_max:.1f}ms > {CHAT_PAGE_WARN_THRESHOLD_MS:.0f}ms)"
+        )
     if first_token_avg is not None:
         result["first_token_latency_ms"] = first_token_avg
 
@@ -1356,6 +1435,14 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
     ws_rate = ws_field.get("avg")
     payload["ws_success_rate"] = ws_rate
 
+    chat_page_stats = (metrics_snapshot.get("types") or {}).get("chat_get", {})
+    chat_page_fields = chat_page_stats.get("fields", {})
+    chat_page_elapsed = chat_page_fields.get("elapsed_ms") or {}
+    chat_page_avg = chat_page_elapsed.get("avg")
+    chat_page_max = chat_page_elapsed.get("max")
+    payload["chat_page_avg_ms"] = chat_page_avg
+    payload["chat_page_max_ms"] = chat_page_max
+
     chat_stats = (metrics_snapshot.get("types") or {}).get("chat", {})
     chat_fields = chat_stats.get("fields", {})
     fallback_avg = (chat_fields.get("fallback") or {}).get("avg")
@@ -1367,6 +1454,10 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
         payload.setdefault("alerts", []).append(f"WebSocket success rate {ws_rate:.1f}%")
     if fallback_avg is not None and fallback_avg > 0.1:
         payload.setdefault("alerts", []).append(f"Fallback usage {fallback_avg * 100:.1f}%")
+    if chat_page_max is not None and chat_page_max > CHAT_PAGE_WARN_THRESHOLD_MS:
+        payload.setdefault("alerts", []).append(
+            f"/chat max load time {chat_page_max:.1f}ms exceeds {CHAT_PAGE_WARN_THRESHOLD_MS:.0f}ms"
+        )
 
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2))
@@ -1374,6 +1465,9 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
 
     print("💚 Yo Health Report\n")
     print(f"Overall health score: {score:.1f}/100")
+    if chat_page_avg is not None:
+        max_display = f", max {chat_page_max:.1f}ms" if chat_page_max is not None else ""
+        print(f"/chat load time avg: {chat_page_avg:.1f}ms{max_display}")
 
     if latest:
         print(
@@ -1890,7 +1984,65 @@ def _handle_health_web(args: argparse.Namespace, __: YoBrain | None = None) -> N
         print(f"❌ Web server not ready: {payload}")
         raise SystemExit(1)
 
-    print(f"✅ Web server healthy at {url}")
+    chat_url = f"http://{host}:{port}/chat"
+    try:
+        chat_response = httpx.get(chat_url, timeout=timeout, headers={"Accept": "text/html"})
+    except Exception as exc:
+        print(f"❌ Unable to fetch {chat_url}: {exc}")
+        raise SystemExit(1) from exc
+
+    if chat_response.status_code != 200:
+        print(f"❌ /chat responded with HTTP {chat_response.status_code}")
+        raise SystemExit(1)
+
+    content_type = chat_response.headers.get("Content-Type", "")
+    if "text/html" not in content_type:
+        print(f"❌ /chat returned unexpected content-type: {content_type}")
+        raise SystemExit(1)
+
+    elapsed_td = getattr(chat_response, "elapsed", None)
+    elapsed_ms = None
+    if elapsed_td is not None:
+        elapsed_ms = elapsed_td.total_seconds() * 1000.0
+        if elapsed_ms > 1000.0:
+            print(f"❌ /chat responded in {elapsed_ms:.1f}ms (expected < 1000ms)")
+            raise SystemExit(1)
+
+    if elapsed_ms is not None:
+        print(f"✅ Web server healthy at {url} (chat page {elapsed_ms:.1f}ms)")
+    else:
+        print(f"✅ Web server healthy at {url} (chat page ok)")
+
+
+def _extract_reply_text(reply: Any) -> str:
+    if reply is None:
+        return ""
+    if isinstance(reply, str):
+        return reply.strip()
+    if isinstance(reply, dict):
+        text = reply.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        for key in ("response", "reply", "message", "content"):
+            candidate = reply.get(key)
+            if isinstance(candidate, str):
+                return candidate.strip()
+    try:
+        return str(reply).strip()
+    except Exception:
+        return ""
+
+
+def _extract_text_length(entry: Dict[str, Any]) -> int | None:
+    reply = entry.get("reply")
+    reply_text = _extract_reply_text(reply)
+    if reply_text:
+        return len(reply_text)
+    token = entry.get("token")
+    if isinstance(token, str):
+        return len(token)
+    text_len = entry.get("text_len")
+    return text_len if isinstance(text_len, int) else None
 
 
 def _handle_health_chat(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1899,6 +2051,7 @@ def _handle_health_chat(args: argparse.Namespace, __: YoBrain | None = None) -> 
     timeout = getattr(args, "timeout", 8.0)
     message = getattr(args, "message", "probe")
     namespace = getattr(args, "ns", "default") or "default"
+    force_fallback = bool(getattr(args, "force_fallback", False))
 
     url = f"http://{host}:{port}/api/chat"
     session_id = f"health-{int(time.time() * 1000)}"
@@ -1908,6 +2061,8 @@ def _handle_health_chat(args: argparse.Namespace, __: YoBrain | None = None) -> 
         "session_id": session_id,
         "stream": True,
     }
+    if force_fallback:
+        payload["force_fallback"] = True
 
     try:
         response = httpx.post(url, json=payload, timeout=timeout)
@@ -1920,9 +2075,13 @@ def _handle_health_chat(args: argparse.Namespace, __: YoBrain | None = None) -> 
         raise SystemExit(1)
 
     data = response.json()
-    reply = (data.get("reply") or "").strip()
-    if not reply:
+    reply_text = _extract_reply_text(data.get("reply"))
+    if not reply_text:
         print(f"❌ Chat probe produced empty reply: {data}")
+        raise SystemExit(1)
+
+    if force_fallback and not data.get("fallback"):
+        print(f"❌ Chat probe expected fallback reply but fallback flag was False: {data}")
         raise SystemExit(1)
 
     print(f"✅ Chat probe succeeded (fallback={data.get('fallback')})")
@@ -1971,7 +2130,8 @@ def _handle_health_ws(args: argparse.Namespace, __: YoBrain | None = None) -> No
         print(f"❌ WebSocket probe failed: {exc}")
         raise SystemExit(1) from exc
 
-    if any("\"chat_complete\"" in msg for msg in ws_messages) or (payload.get("reply") or "").strip():
+    reply_text = _extract_reply_text(payload.get("reply"))
+    if any("\"chat_complete\"" in msg for msg in ws_messages) or reply_text:
         print(f"✅ WebSocket probe succeeded (fallback={payload.get('fallback')})")
         return
 
@@ -2749,6 +2909,13 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry_analyze.add_argument("--json", action="store_true", help="Output raw JSON payload")
     telemetry_analyze.add_argument("--release", action="store_true", help="Show release metadata (version/commit/health)")
     telemetry_analyze.set_defaults(handler=_handle_telemetry_analyze)
+    telemetry_trace = telemetry_sub.add_parser(
+        "trace",
+        help="Trace chat delivery for a session",
+        description="Inspect chat timing and WebSocket events for a session id",
+    )
+    telemetry_trace.add_argument("--session", required=True, help="Session id to inspect")
+    telemetry_trace.set_defaults(handler=_handle_telemetry_trace)
 
     telemetry_archive = telemetry_sub.add_parser("archive", help="Archive the latest telemetry summary", description="Archive telemetry summary")
     telemetry_archive.set_defaults(handler=_handle_telemetry_archive)
@@ -2821,6 +2988,11 @@ def build_parser() -> argparse.ArgumentParser:
     health_parser.add_argument("--timeout", type=float, default=5.0, help="Timeout for web health probe (seconds)")
     health_parser.add_argument("--message", default="probe", help="Probe message for chat/WebSocket health")
     health_parser.add_argument("--ns", default="default", help="Namespace for chat/WebSocket probes")
+    health_parser.add_argument(
+        "--force-fallback",
+        action="store_true",
+        help="Force REST fallback path when probing chat health",
+    )
     health_parser.set_defaults(handler=_handle_health_report)
 
     system_parser = _add_top_level("system", help_text="Lifecycle and maintenance tools", category="Maintenance")

@@ -173,6 +173,7 @@ PY
             data/logs/test_history.json
             data/logs/dependency_history.json
             data/logs/telemetry_summary.json
+            data/logs/chat_timing.jsonl
             data/logs/badge.md
             data/logs/audit_report.json
             data/logs/audit_report.md
@@ -208,10 +209,44 @@ PY
         env:
           PYTHONUNBUFFERED: "1"
         run: python3 -m pytest tests/e2e/test_chat_browser.py -q -x
+      - name: Run fallback UI E2E test
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 -m pytest tests/e2e/test_chat_fallback_ui.py -q -x
+      - name: Run delivery trace test
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 -m pytest tests/e2e/test_chat_delivery_trace.py -k test_delivery -q -x
+      - name: Run fallback health probe
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python3 -m yo.cli web --host 127.0.0.1 --port 8040 --debug &
+          SERVER_PID=$!
+          ATTEMPTS=0
+          until python3 -m yo.cli health web --host 127.0.0.1 --port 8040 --timeout 2 >/dev/null 2>&1; do
+            ATTEMPTS=$((ATTEMPTS + 1))
+            if [ $ATTEMPTS -ge 10 ]; then
+              echo "❌ Web server failed to start in time"
+              kill $SERVER_PID || true
+              wait $SERVER_PID 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+          python3 -m yo.cli health chat --host 127.0.0.1 --port 8040 --timeout 8 --force-fallback
+          RESULT=$?
+          kill $SERVER_PID || true
+          wait $SERVER_PID 2>/dev/null || true
+          exit $RESULT
+      - name: Verify /chat GET latency
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 -m pytest tests/test_chat_get_fast.py -q -x
       - name: Check artifact sizes
         if: ${{ success() }}
         run: |
-          for f in data/logs/audit_report.md data/logs/test_summary.json docs/CHANGELOG.md; do
+          for f in data/logs/audit_report.md data/logs/test_summary.json data/logs/chat_timing.jsonl docs/CHANGELOG.md; do
             if [ ! -f "$f" ]; then
               echo "❌ Missing $f"
               exit 1
@@ -228,7 +263,7 @@ PY
         if: ${{ success() }}
         run: |
           mkdir -p data/logs/checksums
-          find data/logs -type f \( -name '*.json' -o -name '*.md' -o -name '*.html' \) -exec shasum -a 256 {} \; > data/logs/checksums/artifact_hashes.txt
+          find data/logs -type f \( -name '*.json' -o -name '*.jsonl' -o -name '*.md' -o -name '*.html' \) -exec shasum -a 256 {} \; > data/logs/checksums/artifact_hashes.txt
           echo "✅ Generated artifact checksums:"
           cat data/logs/checksums/artifact_hashes.txt
 
@@ -319,6 +354,7 @@ EOF
             data/logs/test_history.json
             data/logs/dependency_history.json
             data/logs/telemetry_summary.json
+            data/logs/chat_timing.jsonl
             data/logs/badge.md
             data/logs/audit_report.json
             data/logs/audit_report.md

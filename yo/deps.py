@@ -10,11 +10,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
+from packaging.version import InvalidVersion, Version
+
 LOGS_DIR = Path("data/logs")
 SUMMARY_PATH = LOGS_DIR / "test_summary.json"
 DEPENDENCY_HISTORY_PATH = LOGS_DIR / "dependency_history.json"
 REQUIREMENTS_PATH = Path("requirements.txt")
 REQUIREMENTS_LOCK_PATH = Path("requirements-lock.txt")
+
+MIN_PACKAGE_VERSIONS = {
+    "fastapi": Version("0.115.0"),
+    "uvicorn": Version("0.30.0"),
+    "websockets": Version("12.0"),
+}
 
 PACKAGE_NAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -99,7 +107,45 @@ def deps_check(print_output: bool = True) -> Dict[str, object]:
         "pip_check_status": pip_check.returncode,
         "pip_check_output": pip_check_output,
     }
+
+    version_results = _verify_min_versions(print_output=print_output)
+    diagnostics["version_checks"] = version_results
     return diagnostics
+
+
+def _verify_min_versions(print_output: bool = True) -> Dict[str, object]:
+    results: List[Dict[str, object]] = []
+    for package, minimum in MIN_PACKAGE_VERSIONS.items():
+        installed = _query_package_version(package)
+        status = "missing"
+        compliant = False
+        version_display = installed or "not installed"
+        if installed:
+            try:
+                parsed = Version(installed)
+                compliant = parsed >= minimum
+                status = "ok" if compliant else "outdated"
+            except InvalidVersion:
+                status = "invalid"
+        entry = {
+            "package": package,
+            "installed": installed,
+            "required": str(minimum),
+            "status": status,
+        }
+        results.append(entry)
+        if print_output:
+            if status == "ok":
+                print(f"✅ {package} {version_display} (meets >= {minimum})")
+            elif status == "outdated":
+                print(f"❌ {package} {version_display} < required {minimum}")
+            elif status == "invalid":
+                print(f"❌ {package} has invalid version string: {version_display}")
+            else:
+                print(f"❌ {package} not installed (requires >= {minimum})")
+
+    overall = "ok" if all(entry["status"] == "ok" for entry in results) else "warn"
+    return {"status": overall, "results": results}
 
 
 def _query_package_version(package: str) -> str | None:

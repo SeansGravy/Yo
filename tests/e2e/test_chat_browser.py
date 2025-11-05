@@ -89,7 +89,12 @@ def test_chat_browser(tmp_path: Path) -> None:
             timeout=5,
         )
         response.raise_for_status()
-        assert (response.json().get("reply") or "").strip()
+        reply_payload = response.json().get("reply") or {}
+        if isinstance(reply_payload, dict):
+            reply_text = (reply_payload.get("text") or "").strip()
+        else:
+            reply_text = str(reply_payload).strip()
+        assert reply_text
     finally:
         stdout_text, stderr_text = _shutdown()
         if proc.returncode not in (0, None, -15, -9):

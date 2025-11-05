@@ -234,14 +234,31 @@ def test_logs_collect_requires_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_health_web_success(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    class Response:
+    class HealthResponse:
         status_code = 200
 
         @staticmethod
         def json() -> dict[str, str]:
             return {"status": "ok"}
 
-    monkeypatch.setattr(cli.httpx, "get", lambda url, timeout=5: Response())
+    class ChatResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/html"}
+        elapsed = timedelta(milliseconds=120)
+
+        @staticmethod  # pragma: no cover - sanity fallback
+        def json() -> dict[str, str]:
+            return {}
+
+    def fake_get(url, timeout=5, headers=None):
+        if url.endswith("/api/health"):
+            return HealthResponse()
+        if url.endswith("/chat"):
+            assert headers == {"Accept": "text/html"}
+            return ChatResponse()
+        raise AssertionError(f"Unexpected URL {url}")
+
+    monkeypatch.setattr(cli.httpx, "get", fake_get)
     args = argparse.Namespace(host="127.0.0.1", port=9000, timeout=5.0)
 
     cli._handle_health_web(args)
@@ -256,7 +273,7 @@ def test_health_chat_empty_reply(monkeypatch: pytest.MonkeyPatch) -> None:
 
         @staticmethod
         def json() -> dict[str, str]:
-            return {"reply": " "}
+            return {"reply": {"text": " "}}
 
     monkeypatch.setattr(cli.httpx, "post", lambda *args, **kwargs: Response())
     args = argparse.Namespace(host="127.0.0.1", port=9000, timeout=1.0, message="probe", ns="default")
@@ -265,13 +282,76 @@ def test_health_chat_empty_reply(monkeypatch: pytest.MonkeyPatch) -> None:
         cli._handle_health_chat(args)
 
 
+def test_health_chat_force_fallback_requires_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"reply": {"text": "ok"}, "fallback": False}
+
+    captured: dict[str, object] = {}
+
+    def fake_post(*args, **kwargs):
+        captured["payload"] = kwargs.get("json")
+        return Response()
+
+    monkeypatch.setattr(cli.httpx, "post", fake_post)
+    args = argparse.Namespace(
+        host="127.0.0.1",
+        port=9000,
+        timeout=1.0,
+        message="probe",
+        ns="default",
+        force_fallback=True,
+    )
+
+    with pytest.raises(SystemExit):
+        cli._handle_health_chat(args)
+    payload_sent = captured.get("payload")
+    assert isinstance(payload_sent, dict)
+    assert payload_sent.get("force_fallback") is True
+
+
+def test_health_chat_force_fallback_pass(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"reply": {"text": "ok"}, "fallback": True}
+
+    captured: dict[str, object] = {}
+
+    def fake_post(*args, **kwargs):
+        captured["payload"] = kwargs.get("json")
+        return Response()
+
+    monkeypatch.setattr(cli.httpx, "post", fake_post)
+    args = argparse.Namespace(
+        host="127.0.0.1",
+        port=9000,
+        timeout=1.0,
+        message="probe",
+        ns="default",
+        force_fallback=True,
+    )
+
+    cli._handle_health_chat(args)
+    output = capsys.readouterr().out
+    assert "✅ Chat probe succeeded" in output
+    payload_sent = captured.get("payload")
+    assert isinstance(payload_sent, dict)
+    assert payload_sent.get("force_fallback") is True
+
+
 def test_health_ws_success(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     calls: dict[str, bool] = {}
 
     def fake_run(coro):  # type: ignore[override]
         calls["run"] = True
         try:
-            return (['{"type":"chat_complete"}'], {"reply": "ok"})
+            return (['{"type":"chat_complete"}'], {"reply": {"text": "ok"}})
         finally:
             try:
                 coro.close()
