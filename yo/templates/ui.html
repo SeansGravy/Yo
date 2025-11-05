@@ -248,6 +248,21 @@
     <script>
       const statusUrl = '/api/status';
       const ingestUrl = '/api/ingest';
+      let refreshTimer = null;
+      let updateSocket = null;
+
+      function startFallback() {
+        if (!refreshTimer) {
+          refreshTimer = setInterval(refreshStatus, 15000);
+        }
+      }
+
+      function stopFallback() {
+        if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+      }
 
       function iconFor(available) {
         return available ? '✅' : '❌';
@@ -524,9 +539,54 @@
           updateNotice(feedback, `❌ Upload failed: ${error}`, 'error');
         }
       });
+      
+      function connectUpdates() {
+        if (!('WebSocket' in window)) {
+          startFallback();
+          return;
+        }
+
+        if (updateSocket) {
+          try { updateSocket.close(); } catch (err) { /* noop */ }
+        }
+
+        startFallback();
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const wsUrl = `${protocol}${window.location.host}/ws/updates`;
+        updateSocket = new WebSocket(wsUrl);
+
+        updateSocket.onopen = () => {
+          stopFallback();
+        };
+
+        updateSocket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            renderBackends(data.backends);
+            renderHealth(data.health);
+            renderVerification(data.verification);
+            renderReleases(data.releases);
+            renderNamespaces(data.namespaces, data.drift_window);
+            updateIngestionState(data.ingestion);
+            updateWarningBanner(data.warning);
+          } catch (error) {
+            console.error('Failed to parse update payload', error);
+          }
+        };
+
+        updateSocket.onclose = () => {
+          startFallback();
+          setTimeout(connectUpdates, 5000);
+        };
+
+        updateSocket.onerror = () => {
+          try { updateSocket.close(); } catch (err) { /* noop */ }
+        };
+      }
 
       refreshStatus();
-      setInterval(refreshStatus, 15000);
+      connectUpdates();
+      startFallback();
     </script>
   </body>
 </html>

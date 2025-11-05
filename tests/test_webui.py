@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+import asyncio
+from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -17,6 +18,7 @@ except ImportError:  # pragma: no cover - skip when FastAPI is unavailable
 
 from yo.backends import BackendStatus, BackendSummary
 from yo.brain import MissingDependencyError
+from yo.config import Config, NamespaceConfig
 from yo import webui
 from yo import release as release_module
 
@@ -115,6 +117,10 @@ def dummy_client(monkeypatch: pytest.MonkeyPatch, healthy_backends: BackendSumma
     monkeypatch.setattr(webui, "detect_backends", lambda: healthy_backends)
     monkeypatch.setattr(webui, "get_brain", lambda: dummy)
     monkeypatch.setattr(webui, "MULTIPART_AVAILABLE", True)
+    monkeypatch.setattr(webui.broadcaster, "start", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(webui.broadcaster, "stop", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(webui.broadcaster, "trigger", lambda: asyncio.sleep(0))
+    
     logs_dir = Path("data/logs")
     (logs_dir / "checksums").mkdir(parents=True, exist_ok=True)
     (logs_dir / "checksums" / "artifact_hashes.txt").write_text("hash", encoding="utf-8")
@@ -144,6 +150,15 @@ def dummy_client(monkeypatch: pytest.MonkeyPatch, healthy_backends: BackendSumma
         "verify_integrity_manifest",
         lambda path: {"success": True, "errors": [], "checksum_valid": True, "artifact_signature": {"success": True}, "bundle_signature": {"success": True}},
     )
+
+    class StubChatStore:
+        def send(self, **kwargs):
+            message = kwargs.get("message", "")
+            reply = f"Echo: {message}" if message else "Echo"
+            history = [{"user": message, "assistant": reply}]
+            return ("session-1", reply, history, {"context": "ctx", "citations": ["doc.md"]})
+
+    monkeypatch.setattr(webui, "chat_store", StubChatStore())
     (logs_dir / "verification_ledger.jsonl").write_text(json.dumps({
         "timestamp": "2025-01-01T00:00:00Z",
         "version": "v-ledger",
@@ -240,6 +255,59 @@ def test_release_endpoints(dummy_client: tuple[TestClient, DummyBrain]) -> None:
     payload = verify.json()
     assert payload["version"] == "v0.5.0"
     assert payload["success"] is True
+
+
+def test_config_endpoints(dummy_client: tuple[TestClient, DummyBrain], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = dummy_client
+
+    state = {"model": "ollama:llama3"}
+
+    def fake_get_config(*_args, **_kwargs):
+        return Config(
+            namespace="default",
+            model_spec=state["model"],
+            embed_model_spec="ollama:nomic-embed-text",
+            model_provider="ollama",
+            model_name=state["model"].split(":", 1)[-1],
+            embed_provider="ollama",
+            embed_name="nomic-embed-text",
+            db_uri="sqlite:///data/milvus_lite.db",
+            data_dir=Path("data"),
+            namespace_overrides={},
+            sources={},
+        )
+
+    updates: dict[str, object] = {}
+
+    def fake_update_config(key: str, value: str, *, namespace: str | None = None, data_dir=None) -> None:
+        updates.update({"key": key, "value": value, "namespace": namespace})
+        if namespace:
+            return
+        if key == "model":
+            state["model"] = value
+
+    monkeypatch.setattr(webui, "get_config", fake_get_config)
+    monkeypatch.setattr(webui, "update_config_value", fake_update_config)
+
+    resp = client.get("/api/config")
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "ollama:llama3"
+
+    resp2 = client.post("/api/config", json={"key": "model", "value": "ollama:gemma"})
+    assert resp2.status_code == 200
+    payload = resp2.json()
+    assert payload["config"]["model"] == "ollama:gemma"
+    assert updates["value"] == "ollama:gemma"
+
+
+def test_chat_endpoint(dummy_client: tuple[TestClient, DummyBrain]) -> None:
+    client, _ = dummy_client
+
+    resp = client.post("/api/chat", json={"namespace": "default", "message": "Hello"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["reply"].startswith("Echo")
+    assert payload["history"][0]["user"] == "Hello"
 
 
 def test_status_endpoint_disables_ingestion_when_backends_missing(

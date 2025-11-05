@@ -23,7 +23,7 @@ from packaging.version import InvalidVersion, Version
 
 from yo.backends import detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
-from yo.config import get_config, reset_config, serialize_config, update_config_value
+from yo.config import ENV_FILE, get_config, reset_config, serialize_config, update_config_value
 from yo.deps import (
     deps_check_command,
     deps_freeze_command,
@@ -126,6 +126,7 @@ COMMAND_REGISTRY: Dict[str, Dict[str, Any]] = {}
 COMMAND_CATEGORIES: Dict[str, str] = {
     "add": "Ingestion",
     "ask": "Retrieval",
+    "chat": "Retrieval",
     "summarize": "Retrieval",
     "namespace": "Namespace",
     "ns": "Namespace",
@@ -763,6 +764,26 @@ def _handle_config_reset(args: argparse.Namespace, _: YoBrain | None = None) -> 
     print(f"✅ Reset {detail} for {scope}.")
 
 
+def _handle_config_edit(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    editor = os.environ.get("EDITOR")
+    if not editor:
+        for candidate in ("nano", "vim", "vi"):
+            if shutil.which(candidate):
+                editor = candidate
+                break
+        if not editor:
+            raise SystemExit("Set the $EDITOR environment variable to edit configuration.")
+
+    env_path = ENV_FILE
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.touch(exist_ok=True)
+
+    try:
+        subprocess.run([editor, str(env_path)], check=False)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"Editor '{editor}' not found.") from exc
+
+
 def _handle_help(args: argparse.Namespace, __: YoBrain | None = None) -> None:
     topic = args.topic
     if topic:
@@ -1194,99 +1215,126 @@ def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) 
                     print(f"\n🌐 Unable to fetch metadata for {package} (HTTP {resp.status_code}).")
 
 
-def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> None:
-    summary = load_test_summary()
-    history = load_test_history(limit=10)
-    dependency_history = load_dependency_history(limit=5)
-    trend = compute_trend(history, days=7)
-    telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
-    health_score = compute_health_score(history, telemetry_summary)
-    ledger_entry: Dict[str, Any] | None = None
-    ledger_path = Path("data/logs/verification_ledger.jsonl")
-    if ledger_path.exists():
-        try:
-            ledger_lines = [line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-            if ledger_lines:
-                ledger_entry = json.loads(ledger_lines[-1])
-        except json.JSONDecodeError:
-            ledger_entry = None
-    checksum_file_path = Path("data/logs/checksums/artifact_hashes.txt")
-    signature_path = Path("data/logs/checksums/artifact_hashes.sig")
+def _handle_dashboard_cli(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    def _render(clear: bool = False) -> None:
+        summary = load_test_summary()
+        history = load_test_history(limit=10)
+        dependency_history = load_dependency_history(limit=5)
+        trend = compute_trend(history, days=7)
+        telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
+        health_score = compute_health_score(history, telemetry_summary)
+        ledger_entry: Dict[str, Any] | None = None
+        ledger_path = Path("data/logs/verification_ledger.jsonl")
+        if ledger_path.exists():
+            try:
+                ledger_lines = [line for line in ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                if ledger_lines:
+                    ledger_entry = json.loads(ledger_lines[-1])
+            except json.JSONDecodeError:
+                ledger_entry = None
+        checksum_file_path = Path("data/logs/checksums/artifact_hashes.txt")
+        signature_path = Path("data/logs/checksums/artifact_hashes.sig")
 
-    print("🖥️  Yo Developer Dashboard\n")
+        if clear:
+            if console:
+                console.clear()
+            else:
+                os.system("cls" if os.name == "nt" else "clear")
 
-    if summary:
-        print("Latest Verification:")
-        print(f"   Status: {summary.get('status', 'unknown')}")
-        print(
-            "   Tests: {} passed / {} total".format(
-                summary.get("tests_passed", 0), summary.get("tests_total", 0)
+        print("🖥️  Yo Developer Dashboard\n")
+
+        if summary:
+            print("Latest Verification:")
+            print(f"   Status: {summary.get('status', 'unknown')}")
+            print(
+                "   Tests: {} passed / {} total".format(
+                    summary.get("tests_passed", 0), summary.get("tests_total", 0)
+                )
             )
-        )
-        duration = summary.get("duration_seconds")
-        if duration is not None:
-            print(f"   Duration: {float(duration):.2f}s")
-    else:
-        print("Latest Verification: unavailable")
-
-    if trend:
-        print("\nRecent Trend (last {} runs):".format(len(trend)))
-        for entry in trend:
-            ts = entry.get("timestamp")
-            status = entry.get("status")
-            failures = entry.get("tests_failed", 0)
-            duration = entry.get("duration_seconds")
-            pass_rate = entry.get("pass_rate_percent")
-            line = f"   • {ts} — {status}".strip()
-            if failures:
-                line += f" (failures: {failures})"
+            duration = summary.get("duration_seconds")
             if duration is not None:
-                line += f", {float(duration):.2f}s"
-            if pass_rate is not None:
-                line += f", pass rate: {pass_rate:.1f}%"
-            print(line)
-    else:
-        print("\nRecent Trend: unavailable")
+                print(f"   Duration: {float(duration):.2f}s")
+            print(f"   Logged at: {summary.get('timestamp', 'unknown')}")
+        else:
+            print("Latest Verification: unavailable")
 
-    if dependency_history:
-        print("\nDependency Events:")
-        for event in dependency_history:
-            timestamp = event.get("timestamp")
-            action = event.get("action")
-            packages = ", ".join(event.get("packages", []))
-            print(f"   • {timestamp}: {action} ({packages})")
-    else:
-        print("\nDependency Events: none recorded")
+        if trend:
+            print("\nRecent Trend (last {} runs):".format(len(trend)))
+            for entry in trend:
+                ts = entry.get("timestamp")
+                status = entry.get("status")
+                failures = entry.get("tests_failed", 0)
+                duration = entry.get("duration_seconds")
+                pass_rate = entry.get("pass_rate_percent")
+                line = f"   • {ts} — {status}".strip()
+                if failures:
+                    line += f" (failures: {failures})"
+                if duration is not None:
+                    line += f", {float(duration):.2f}s"
+                if pass_rate is not None:
+                    line += f", pass rate: {pass_rate:.1f}%"
+                print(line)
+        else:
+            print("\nRecent Trend: unavailable")
 
-    if telemetry_summary:
-        mean_rate = telemetry_summary.get("pass_rate_mean")
-        volatility = telemetry_summary.get("pass_rate_volatility")
-        duration_avg = telemetry_summary.get("duration_average")
-        print("\nTelemetry Insights:")
-        if mean_rate is not None:
-            display_rate = mean_rate * 100 if mean_rate <= 1 else mean_rate
-            print(f"   • Avg pass rate: {display_rate:.1f}%")
-        if volatility is not None:
-            print(f"   • Pass-rate volatility: {volatility:.3f}")
-        if duration_avg is not None:
-            print(f"   • Avg duration: {duration_avg:.2f}s")
-        recurring = telemetry_summary.get("recurring_errors") or []
-        if recurring:
-            print("   • Top recurring issues:")
-            for issue in recurring:
-                print(f"     - {issue['message']} ({issue['count']}x)")
+        if dependency_history:
+            print("\nDependency Events:")
+            for event in dependency_history:
+                timestamp = event.get("timestamp")
+                action = event.get("action")
+                packages = ", ".join(event.get("packages", []))
+                print(f"   • {timestamp}: {action} ({packages})")
+        else:
+            print("\nDependency Events: none recorded")
 
-    if health_score is not None:
-        print(f"\nOverall health score: {health_score:.1f}/100")
+        if telemetry_summary:
+            mean_rate = telemetry_summary.get("pass_rate_mean")
+            volatility = telemetry_summary.get("pass_rate_volatility")
+            duration_avg = telemetry_summary.get("duration_average")
+            print("\nTelemetry Insights:")
+            if mean_rate is not None:
+                display_rate = mean_rate * 100 if mean_rate <= 1 else mean_rate
+                print(f"   • Avg pass rate: {display_rate:.1f}%")
+            if volatility is not None:
+                print(f"   • Pass-rate volatility: {volatility:.3f}")
+            if duration_avg is not None:
+                print(f"   • Avg duration: {duration_avg:.2f}s")
+            recurring = telemetry_summary.get("recurring_errors") or []
+            if recurring:
+                print("   • Top recurring issues:")
+                for issue in recurring:
+                    print(f"     - {issue['message']} ({issue['count']}x)")
 
-    if ledger_entry:
-        print("\nSigned Verification:")
-        print(f"   • Version: {ledger_entry.get('version', 'unknown')}")
-        print(f"   • Commit: {ledger_entry.get('commit', 'unknown')}")
-        print(f"   • Health: {ledger_entry.get('health', 'n/a')}")
-        print(f"   • Checksum: {ledger_entry.get('checksum_file', checksum_file_path)}")
-        signature_display = str(signature_path) if signature_path.exists() else ledger_entry.get("signature", "n/a")
-        print(f"   • Signature: {signature_display}")
+        if health_score is not None:
+            print(f"\nOverall health score: {health_score:.1f}/100")
+
+        if ledger_entry:
+            print("\nSigned Verification:")
+            print(f"   • Version: {ledger_entry.get('version', 'unknown')}")
+            print(f"   • Commit: {ledger_entry.get('commit', 'unknown')}")
+            print(f"   • Health: {ledger_entry.get('health', 'n/a')}")
+            print(f"   • Checksum: {ledger_entry.get('checksum_file', checksum_file_path)}")
+            signature_display = str(signature_path) if signature_path.exists() else ledger_entry.get("signature", "n/a")
+            print(f"   • Signature: {signature_display}")
+
+    if getattr(args, "live", False):
+        try:
+            from watchfiles import watch  # type: ignore
+        except ImportError:
+            print("⚠️  Install 'watchfiles' to use --live mode.")
+            _render()
+            return
+
+        print("📡 Live dashboard — press Ctrl+C to exit.")
+        _render(clear=True)
+        try:
+            for _ in watch("data/logs", "data/namespace_meta.json", debounce=1.0):
+                _render(clear=True)
+        except KeyboardInterrupt:
+            print("\n👋 Exiting live dashboard.")
+        return
+
+    _render()
 
 
 def _handle_system_clean(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1435,6 +1483,52 @@ def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> N
         print(f"   Health: {health}")
         print(f"   Checksum file: {checksum_file}")
         print(f"   Signature: {signature}")
+
+
+def _handle_chat(args: argparse.Namespace, brain: YoBrain | None = None) -> None:
+    if brain is None:
+        brain = YoBrain()
+
+    namespace = getattr(args, "ns", None) or getattr(brain, "active_namespace", _active_namespace_default())
+    namespace = namespace or _active_namespace_default()
+
+    history: list[dict[str, str]] = []
+
+    def _send(message: str) -> None:
+        payload = brain.chat(
+            message=message,
+            namespace=namespace,
+            history=history,
+            web=getattr(args, "web", False),
+        )
+        reply = payload.get("response", "")
+        citations = payload.get("citations") or []
+        history.append({"user": message, "assistant": reply})
+        print(f"\n🧠 Yo ({namespace}):\n{reply}\n")
+        if citations:
+            print("🔗 Sources:")
+            for citation in citations[:5]:
+                print(f"   • {citation}")
+
+    if getattr(args, "message", None):
+        message_text = " ".join(args.message).strip()
+        if not message_text:
+            raise SystemExit("Message cannot be empty.")
+        _send(message_text)
+        return
+
+    print("🧠 Interactive chat mode. Type '/exit' to quit.\n")
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not user_input:
+            continue
+        if user_input.lower() in {"/exit", "/quit"}:
+            break
+        _send(user_input)
 
 
 def _handle_package_release(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1807,6 +1901,12 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("--web", action="store_true", help="Blend cached web context into answers")
     ask_parser.set_defaults(handler=_handle_ask)
 
+    chat_parser = _add_top_level("chat", help_text="Chat with YoBrain", category="Retrieval")
+    chat_parser.add_argument("message", nargs="*", help="Message to send immediately")
+    chat_parser.add_argument("--ns", help="Namespace to target (default: active namespace)")
+    chat_parser.add_argument("--web", action="store_true", help="Blend cached web context into replies")
+    chat_parser.set_defaults(handler=_handle_chat)
+
     summarize_parser = _add_top_level("summarize", help_text="Summarize a namespace", category="Retrieval")
     _add_ns_options(summarize_parser)
     summarize_parser.set_defaults(handler=_handle_summarize)
@@ -1861,6 +1961,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_reset.add_argument("key", nargs="?", choices=CONFIG_MUTABLE_KEYS, help="Specific key to reset")
     config_reset.add_argument("--ns", help="Namespace override (optional)")
     config_reset.set_defaults(handler=_handle_config_reset)
+
+    config_edit = config_sub.add_parser("edit", help="Open configuration in $EDITOR", description="Edit configuration via your editor")
+    config_edit.set_defaults(handler=_handle_config_edit)
 
     deps_parser = _add_top_level("deps", help_text="Dependency intelligence tools", category="Dependencies")
     deps_sub = deps_parser.add_subparsers(dest="deps_command", required=True)
@@ -1950,6 +2053,7 @@ def build_parser() -> argparse.ArgumentParser:
     explain_verify.set_defaults(handler=_handle_explain_verify)
 
     dashboard_parser = _add_top_level("dashboard", help_text="Show the developer dashboard", category="Insights")
+    dashboard_parser.add_argument("--live", action="store_true", help="Stream dashboard updates in real time")
     dashboard_parser.set_defaults(handler=_handle_dashboard_cli)
 
     cache_parser = _add_top_level("cache", help_text="Web cache utilities", category="Utilities")

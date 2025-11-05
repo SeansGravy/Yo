@@ -1100,3 +1100,56 @@ class YoBrain:
         )
         response = self.client.generate(model=self.model_name, prompt=prompt)
         return response["response"]
+
+    def chat(
+        self,
+        *,
+        message: str,
+        namespace: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        web: bool = False,
+    ) -> dict[str, Any]:
+        """Return a conversational reply using optional prior history."""
+
+        if not message:
+            raise ValueError("Message cannot be empty.")
+
+        namespace = namespace or self.active_namespace
+        coll_name = self._collection_name(namespace)
+        memory_context, citations = self._search_memory(coll_name, message)
+
+        system_prompt = (
+            "You are Yo, a concise local research assistant. "
+            "Use the provided context and prior conversation to answer. "
+            "If the context does not contain the answer, acknowledge the gap honestly."
+        )
+        if memory_context:
+            system_prompt += f"\n\nContext:\n{memory_context}"
+
+        conversation: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history:
+            for turn in history[-10:]:
+                user_msg = turn.get("user")
+                assistant_msg = turn.get("assistant")
+                if user_msg:
+                    conversation.append({"role": "user", "content": str(user_msg)})
+                if assistant_msg:
+                    conversation.append({"role": "assistant", "content": str(assistant_msg)})
+
+        conversation.append({"role": "user", "content": message})
+
+        response = self.client.chat(model=self.model_name, messages=conversation)
+        reply = ""
+        if isinstance(response, dict):
+            message_block = response.get("message")
+            if isinstance(message_block, dict):
+                reply = message_block.get("content") or ""
+            reply = reply or response.get("response", "")
+        reply = reply or "(No response generated.)"
+
+        payload: dict[str, Any] = {
+            "response": reply.strip(),
+            "context": memory_context,
+            "citations": citations,
+        }
+        return payload

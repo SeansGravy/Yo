@@ -12,13 +12,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from starlette.datastructures import UploadFile
 
 from yo.backends import BackendStatus, detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
+from yo.chat import ChatSessionStore
+from yo.config import get_config, update_config_value
 from yo.logging_utils import get_logger
 from yo.telemetry import (
     build_telemetry_summary,
@@ -35,6 +38,7 @@ from yo.release import (
     list_release_manifests,
     verify_integrity_manifest,
 )
+from yo.websocket import UpdateBroadcaster
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -61,6 +65,19 @@ NAMESPACE_CHUNK_ALERT = 5000
 NAMESPACE_GROWTH_ALERT = 75.0
 DEFAULT_DRIFT_WINDOW = timedelta(days=7)
 DRIFT_WINDOW_LABEL = "7d"
+
+
+class ChatRequest(BaseModel):
+    namespace: str = "default"
+    message: str
+    session_id: str | None = None
+    web: bool = False
+
+
+class ConfigUpdateRequest(BaseModel):
+    key: str
+    value: str
+    namespace: str | None = None
 
 
 def _format_backend(status: BackendStatus) -> dict[str, Any]:
@@ -184,6 +201,24 @@ def render_ui(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("ui.html", context)
 
 
+@app.get("/chat", response_class=HTMLResponse)
+def render_chat(request: Request) -> HTMLResponse:
+    if templates is None:
+        html = (TEMPLATES_DIR / "chat.html").read_text(encoding="utf-8")
+        html = html.replace("{{ app_version }}", app.version)
+        return HTMLResponse(content=html)
+    return templates.TemplateResponse("chat.html", {"request": request, "app_version": app.version})
+
+
+@app.get("/config", response_class=HTMLResponse)
+def render_config_editor(request: Request) -> HTMLResponse:
+    if templates is None:
+        html = (TEMPLATES_DIR / "config.html").read_text(encoding="utf-8")
+        html = html.replace("{{ app_version }}", app.version)
+        return HTMLResponse(content=html)
+    return templates.TemplateResponse("config.html", {"request": request, "app_version": app.version})
+
+
 @app.get("/api/docs", include_in_schema=False)
 def api_docs_redirect() -> RedirectResponse:
     """Expose OpenAPI docs under /api/docs."""
@@ -191,10 +226,7 @@ def api_docs_redirect() -> RedirectResponse:
     return RedirectResponse(url="/docs")
 
 
-@app.get("/api/status", response_class=JSONResponse)
-def api_status() -> JSONResponse:
-    """Return backend availability and namespace insights for the Lite UI."""
-
+def build_status_payload() -> dict[str, Any]:
     backends = detect_backends()
     backend_info = {
         "milvus": _format_backend(backends.milvus),
@@ -343,8 +375,122 @@ def api_status() -> JSONResponse:
         "release": release_info,
         "releases": releases_list,
     }
+    return payload
 
-    return JSONResponse(content=payload)
+
+@app.get("/api/status", response_class=JSONResponse)
+def api_status() -> JSONResponse:
+    """Return backend availability and namespace insights for the Lite UI."""
+
+    return JSONResponse(content=build_status_payload())
+
+
+@app.websocket("/ws/updates")
+async def websocket_updates(websocket: WebSocket) -> None:
+    await websocket.accept()
+    await broadcaster.connect(websocket)
+    try:
+        await websocket.send_text(json.dumps(build_status_payload()))
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await broadcaster.disconnect(websocket)
+    except Exception:  # pragma: no cover - network failure path
+        await broadcaster.disconnect(websocket)
+
+
+def build_config_payload() -> dict[str, Any]:
+    cfg = get_config()
+    overrides = {name: value.as_dict() for name, value in cfg.namespace_overrides.items()}
+    payload: dict[str, Any] = {
+        "namespace": cfg.namespace,
+        "model": cfg.model_spec,
+        "embed_model": cfg.embed_model_spec,
+        "db_uri": cfg.db_uri,
+        "data_dir": str(cfg.data_dir),
+        "namespace_overrides": overrides,
+        "sources": cfg.sources,
+    }
+    return payload
+
+
+@app.get("/api/config", response_class=JSONResponse)
+def api_config() -> JSONResponse:
+    return JSONResponse(content=build_config_payload())
+
+
+@app.post("/api/config", response_class=JSONResponse)
+async def api_config_update(payload: ConfigUpdateRequest) -> JSONResponse:
+    namespace = (payload.namespace or "").strip() or None
+    data_dir = None
+    try:
+        brain = get_brain()
+        data_dir = brain.data_dir
+    except Exception:  # pragma: no cover - brain initialisation failure
+        data_dir = None
+
+    try:
+        update_config_value(payload.key, payload.value, namespace=namespace, data_dir=data_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await broadcaster.trigger()
+    return JSONResponse(content={"status": "ok", "config": build_config_payload()})
+
+
+@app.post("/api/chat", response_class=JSONResponse)
+async def api_chat(payload: ChatRequest) -> JSONResponse:
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    namespace = payload.namespace.strip() or get_config().namespace
+    try:
+        brain = get_brain()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"YoBrain unavailable: {exc}") from exc
+
+    try:
+        session_id, reply, history, metadata = chat_store.send(
+            brain=brain,
+            namespace=namespace,
+            message=message,
+            session_id=payload.session_id,
+            web=payload.web,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    response_payload = {
+        "session_id": session_id,
+        "reply": reply,
+        "namespace": namespace,
+        "history": history,
+        "context": metadata.get("context"),
+        "citations": metadata.get("citations", []),
+    }
+    return JSONResponse(content=response_payload)
+
+
+chat_store = ChatSessionStore()
+broadcaster = UpdateBroadcaster(
+    [
+        Path("data/logs"),
+        Path("data/namespace_meta.json"),
+        Path(".env"),
+    ],
+    build_status_payload,
+)
+
+
+@app.on_event("startup")
+async def _startup_events() -> None:
+    await broadcaster.start()
+
+
+@app.on_event("shutdown")
+async def _shutdown_events() -> None:
+    await broadcaster.stop()
 
 
 @app.get("/api/releases", response_class=JSONResponse)

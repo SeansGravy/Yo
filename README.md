@@ -121,6 +121,12 @@ scripts/setup_yo_dev.sh
 - Aliases keep muscle memory sharp: `yo t` → `yo telemetry analyze`, `yo h` → `yo health report`.
 - Output is colorized when `rich` is available (auto-installed via `requirements.txt`), making summaries and alerts easy to scan in both CLI and CI logs.
 
+## 💬 Conversational CLI & UI
+
+- `yo chat [message] [--ns research]` opens a multi-turn REPL that preserves history, surfaces citations, and mirrors the new `/chat` web workspace.
+- `/chat` in the Lite UI keeps a persistent message list, streams responses as they arrive, and remembers the current session via local storage.
+- Real-time dashboards now run over `/ws/updates`; `/dashboard` in the CLI supports `--live` streaming so terminal users see the same telemetry pulses as the browser.
+
 ## ⚙️ Testing
 ```bash
 python3 -m compileall yo

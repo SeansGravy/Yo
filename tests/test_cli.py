@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -383,6 +384,39 @@ def test_handle_system_clean_release(monkeypatch: pytest.MonkeyPatch, capsys: py
 
     cli._handle_system_clean(argparse.Namespace(dry_run=False, older_than=14, release=True), None)
     assert captured.get("release") is True
+
+
+def test_handle_config_edit_uses_editor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    calls: list[list[str]] = []
+
+    monkeypatch.setenv("EDITOR", "test-editor")
+    monkeypatch.setattr(cli, "ENV_FILE", env_path, raising=False)
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, check=False: calls.append(cmd))
+
+    cli._handle_config_edit(argparse.Namespace(), None)
+
+    assert env_path.exists()
+    assert calls == [["test-editor", str(env_path)]]
+
+
+def test_handle_chat_single_message(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class DummyBrain:
+        active_namespace = "default"
+
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"response": "Hello there!", "citations": ["doc.md"]}
+
+    brain = DummyBrain()
+    cli._handle_chat(argparse.Namespace(message=["Hi"], ns=None, web=False), brain)
+
+    output = capsys.readouterr().out
+    assert "Hello there" in output
+    assert brain.calls[0]["web"] is False
 def test_telemetry_analyze_release(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(
         cli,

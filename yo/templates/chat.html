@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yo Chat</title>
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        margin: 0 auto;
+        padding: 2rem;
+        max-width: 720px;
+        background: #f9fafb;
+        color: #1f2933;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 1.5rem;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.6rem;
+      }
+      header span {
+        font-size: 0.9rem;
+        color: #52606d;
+      }
+      #messages {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+        min-height: 320px;
+        max-height: 480px;
+        overflow-y: auto;
+        margin-bottom: 1rem;
+      }
+      .message {
+        margin-bottom: 1rem;
+      }
+      .message strong {
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+      .assistant {
+        background: #eef2ff;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+      }
+      .user {
+        background: #f1f5f9;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+      }
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+      textarea {
+        width: 100%;
+        min-height: 90px;
+        resize: vertical;
+        padding: 0.75rem;
+        font-size: 1rem;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+      }
+      textarea:focus {
+        outline: none;
+        border-color: #6366f1;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+      }
+      .toolbar {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      input[type="text"], select {
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid #cbd5e1;
+        font-size: 0.95rem;
+      }
+      button {
+        background: #4338ca;
+        color: #fff;
+        border: none;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 1rem;
+      }
+      button.secondary {
+        background: #e2e8f0;
+        color: #1f2933;
+      }
+      button:disabled {
+        background: #cbd5e1;
+        cursor: not-allowed;
+      }
+      #status {
+        font-size: 0.9rem;
+        color: #52606d;
+        min-height: 1.2rem;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #111827;
+          color: #e5e7eb;
+        }
+        #messages {
+          background: #1f2937;
+          box-shadow: none;
+        }
+        .assistant {
+          background: #312e81;
+          color: #e0e7ff;
+        }
+        .user {
+          background: #1e293b;
+        }
+        textarea, input[type="text"], select {
+          background: #111827;
+          color: #e5e7eb;
+          border-color: #374151;
+        }
+        button.secondary {
+          background: #1f2937;
+          color: #e5e7eb;
+        }
+        header span {
+          color: #94a3b8;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Yo Chat</h1>
+        <span>Live conversation · v{{ app_version }}</span>
+      </div>
+      <div class="toolbar">
+        <label>
+          Namespace
+          <input id="namespace-input" type="text" value="default" />
+        </label>
+        <button type="button" class="secondary" id="new-session">New Session</button>
+      </div>
+    </header>
+
+    <main>
+      <div id="messages"></div>
+      <form id="chat-form">
+        <textarea id="message-input" placeholder="Ask a question or share an update…" required></textarea>
+        <div class="toolbar">
+          <button type="submit" id="send-button">Send</button>
+          <span id="status"></span>
+        </div>
+      </form>
+    </main>
+
+    <script>
+      const chatUrl = '/api/chat';
+      const sessionKey = 'yo_chat_session';
+      const historyKey = 'yo_chat_history';
+      let sessionId = localStorage.getItem(sessionKey) || null;
+
+      const messagesEl = document.getElementById('messages');
+      const namespaceInput = document.getElementById('namespace-input');
+      const messageInput = document.getElementById('message-input');
+      const statusEl = document.getElementById('status');
+      const sendButton = document.getElementById('send-button');
+
+      function renderHistory(history, animateLast = false) {
+        messagesEl.innerHTML = '';
+        history.forEach((turn, index) => {
+          const userBlock = document.createElement('div');
+          userBlock.className = 'message user';
+          userBlock.innerHTML = `<strong>You</strong>${turn.user}`;
+          messagesEl.appendChild(userBlock);
+
+          const assistantBlock = document.createElement('div');
+          assistantBlock.className = 'message assistant';
+          assistantBlock.innerHTML = `<strong>Yo</strong><span class="assistant-text">${turn.assistant}</span>`;
+          messagesEl.appendChild(assistantBlock);
+
+          if (animateLast && index === history.length - 1) {
+            typewriterEffect(assistantBlock.querySelector('.assistant-text'), turn.assistant);
+          }
+        });
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function typewriterEffect(element, text) {
+        if (!element) return;
+        element.textContent = '';
+        let index = 0;
+        const interval = setInterval(() => {
+          element.textContent += text.charAt(index);
+          index += 1;
+          if (index >= text.length) {
+            clearInterval(interval);
+          }
+        }, 20);
+      }
+
+      function loadStoredHistory() {
+        const raw = localStorage.getItem(historyKey);
+        if (!raw) return [];
+        try {
+          const payload = JSON.parse(raw);
+          if (payload && payload.session_id === sessionId) {
+            return payload.history || [];
+          }
+        } catch (error) {
+          console.warn('Failed to parse stored history', error);
+        }
+        return [];
+      }
+
+      function storeHistory(history) {
+        localStorage.setItem(historyKey, JSON.stringify({ session_id: sessionId, history }));
+      }
+
+      async function sendMessage(content) {
+        const namespace = namespaceInput.value.trim() || 'default';
+        statusEl.textContent = 'Thinking…';
+        sendButton.disabled = true;
+        messageInput.disabled = true;
+        try {
+          const response = await fetch(chatUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              namespace,
+              message: content,
+              session_id: sessionId,
+            }),
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.detail || 'Chat request failed.');
+          }
+          const payload = await response.json();
+          sessionId = payload.session_id;
+          localStorage.setItem(sessionKey, sessionId);
+          const history = payload.history || [];
+          storeHistory(history);
+          renderHistory(history, true);
+          statusEl.textContent = '';
+        } catch (error) {
+          statusEl.textContent = `❌ ${error}`;
+        } finally {
+          sendButton.disabled = false;
+          messageInput.disabled = false;
+          messageInput.focus();
+        }
+      }
+
+      document.getElementById('chat-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const message = messageInput.value.trim();
+        if (!message) {
+          return;
+        }
+        const currentHistory = loadStoredHistory();
+        currentHistory.push({ user: message, assistant: '…' });
+        renderHistory(currentHistory);
+        messageInput.value = '';
+        sendMessage(message);
+      });
+
+      document.getElementById('new-session').addEventListener('click', () => {
+        sessionId = null;
+        localStorage.removeItem(sessionKey);
+        localStorage.removeItem(historyKey);
+        messagesEl.innerHTML = '';
+        statusEl.textContent = 'Started a new session.';
+      });
+
+      window.addEventListener('load', () => {
+        const history = loadStoredHistory();
+        if (history.length) {
+          renderHistory(history);
+        }
+      });
+    </script>
+  </body>
+</html>

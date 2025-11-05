@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yo Configuration</title>
+    <style>
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        margin: 0 auto;
+        padding: 2rem;
+        max-width: 840px;
+        background: #f8fafc;
+        color: #1f2937;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 1.5rem;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.6rem;
+      }
+      header span {
+        font-size: 0.9rem;
+        color: #52606d;
+      }
+      section {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+        margin-bottom: 1.5rem;
+      }
+      h2 {
+        margin-top: 0;
+      }
+      form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        font-size: 0.9rem;
+        gap: 0.3rem;
+      }
+      input[type="text"], select {
+        padding: 0.55rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid #cbd5e1;
+        min-width: 180px;
+        font-size: 0.95rem;
+      }
+      button {
+        background: #4338ca;
+        color: #fff;
+        border: none;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 1rem;
+      }
+      button.secondary {
+        background: #e2e8f0;
+        color: #1f2933;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+      }
+      th, td {
+        text-align: left;
+        padding: 0.5rem;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      #status {
+        font-size: 0.9rem;
+        color: #52606d;
+        min-height: 1.2rem;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background: #111827;
+          color: #e5e7eb;
+        }
+        section {
+          background: #1f2937;
+          box-shadow: none;
+        }
+        input[type="text"], select {
+          background: #111827;
+          color: #e5e7eb;
+          border: 1px solid #374151;
+        }
+        button.secondary {
+          background: #1f2937;
+          color: #e5e7eb;
+        }
+        header span {
+          color: #94a3b8;
+        }
+        th, td {
+          border-color: #374151;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Yo Configuration</h1>
+        <span>Runtime settings · v{{ app_version }}</span>
+      </div>
+      <div id="status"></div>
+    </header>
+
+    <section>
+      <h2>Current Configuration</h2>
+      <p><strong>Active namespace:</strong> <span id="cfg-namespace">—</span></p>
+      <p><strong>Model:</strong> <span id="cfg-model">—</span></p>
+      <p><strong>Embedding model:</strong> <span id="cfg-embed">—</span></p>
+      <p><strong>Database URI:</strong> <span id="cfg-db">—</span></p>
+    </section>
+
+    <section>
+      <h2>Update Global Defaults</h2>
+      <form id="global-form">
+        <label>
+          Key
+          <select id="global-key">
+            <option value="namespace">namespace</option>
+            <option value="model">model</option>
+            <option value="embed_model">embed_model</option>
+            <option value="db_uri">db_uri</option>
+          </select>
+        </label>
+        <label>
+          Value
+          <input id="global-value" type="text" placeholder="ollama:llama3" required />
+        </label>
+        <button type="submit">Save</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Namespace Overrides</h2>
+      <form id="namespace-form">
+        <label>
+          Namespace
+          <input id="ns-name" type="text" placeholder="default" required />
+        </label>
+        <label>
+          Key
+          <select id="ns-key">
+            <option value="model">model</option>
+            <option value="embed_model">embed_model</option>
+          </select>
+        </label>
+        <label>
+          Value
+          <input id="ns-value" type="text" placeholder="ollama:llama3" required />
+        </label>
+        <button type="submit">Save Override</button>
+      </form>
+      <table>
+        <thead>
+          <tr>
+            <th>Namespace</th>
+            <th>Model</th>
+            <th>Embedding</th>
+          </tr>
+        </thead>
+        <tbody id="namespace-table"></tbody>
+      </table>
+    </section>
+
+    <script>
+      const configUrl = '/api/config';
+      const statusEl = document.getElementById('status');
+      const namespaceTable = document.getElementById('namespace-table');
+
+      async function loadConfig() {
+        try {
+          const response = await fetch(configUrl, { cache: 'no-store' });
+          if (!response.ok) throw new Error('Unable to load configuration.');
+          const payload = await response.json();
+          document.getElementById('cfg-namespace').textContent = payload.namespace;
+          document.getElementById('cfg-model').textContent = payload.model;
+          document.getElementById('cfg-embed').textContent = payload.embed_model;
+          document.getElementById('cfg-db').textContent = payload.db_uri;
+          renderNamespaceOverrides(payload.namespace_overrides || {});
+        } catch (error) {
+          statusEl.textContent = `❌ ${error}`;
+        }
+      }
+
+      function renderNamespaceOverrides(overrides) {
+        namespaceTable.innerHTML = '';
+        const entries = Object.entries(overrides);
+        if (!entries.length) {
+          const row = document.createElement('tr');
+          const cell = document.createElement('td');
+          cell.colSpan = 3;
+          cell.textContent = 'No namespace overrides defined.';
+          row.appendChild(cell);
+          namespaceTable.appendChild(row);
+          return;
+        }
+        entries.forEach(([name, values]) => {
+          const row = document.createElement('tr');
+          const model = values.model || '—';
+          const embed = values.embed_model || '—';
+          row.innerHTML = `<td>${name}</td><td>${model}</td><td>${embed}</td>`;
+          namespaceTable.appendChild(row);
+        });
+      }
+
+      async function postConfigUpdate(body) {
+        statusEl.textContent = 'Saving…';
+        try {
+          const response = await fetch(configUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.detail || 'Update failed.');
+          }
+          const payload = await response.json();
+          statusEl.textContent = '✅ Configuration updated.';
+          document.getElementById('cfg-model').textContent = payload.config.model;
+          document.getElementById('cfg-embed').textContent = payload.config.embed_model;
+          document.getElementById('cfg-namespace').textContent = payload.config.namespace;
+          document.getElementById('cfg-db').textContent = payload.config.db_uri;
+          renderNamespaceOverrides(payload.config.namespace_overrides || {});
+        } catch (error) {
+          statusEl.textContent = `❌ ${error}`;
+        }
+      }
+
+      document.getElementById('global-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const key = document.getElementById('global-key').value;
+        const value = document.getElementById('global-value').value.trim();
+        if (!value) {
+          statusEl.textContent = 'Value cannot be empty.';
+          return;
+        }
+        postConfigUpdate({ key, value });
+      });
+
+      document.getElementById('namespace-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        const ns = document.getElementById('ns-name').value.trim();
+        const key = document.getElementById('ns-key').value;
+        const value = document.getElementById('ns-value').value.trim();
+        if (!ns || !value) {
+          statusEl.textContent = 'Namespace and value are required.';
+          return;
+        }
+        postConfigUpdate({ key, value, namespace: ns });
+      });
+
+      loadConfig();
+    </script>
+  </body>
+</html>
