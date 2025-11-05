@@ -94,6 +94,13 @@ scripts/setup_yo_dev.sh
 - The Local CI workflow publishes these artifacts, copies the Markdown into `docs/RELEASE_NOTES.md`, and pushes doc updates alongside the latest tag.
 - CI also refreshes `docs/latest.html`, giving GitHub Pages an always-current audit snapshot.
 
+## 🔐 Signature & Clone Verification
+
+- `yo verify signature [--json]` confirms the detached GPG signature in `data/logs/checksums/artifact_hashes.sig` matches the checksum file. Successful runs report the signer, version, and health metadata; JSON mode emits a machine-friendly payload for CI gates.
+- `yo verify clone [--json]` validates the signature and compares `artifact_hashes.txt` against `origin/main`, ensuring cloned or restored working copies match the published artifacts. Any mismatch includes remediation hints (e.g., rerun `yo deps repair`).
+- `yo verify ledger` prints the most recent signed verification entries from `data/logs/verification_ledger.jsonl`, including timestamp, commit SHA, and checksum path.
+- The dashboard surfaces these trust signals via a green “Verified” badge, signer details, and signature timestamp in the Integrity panel, providing at-a-glance assurance that the build is authentic.
+
 ## 🧭 Dynamic Help, Aliases, & Color
 
 - `yo help` shows a categorized command directory. `yo help <command>` drills into subcommands with rich tables.

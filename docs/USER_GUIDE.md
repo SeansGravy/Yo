@@ -203,7 +203,38 @@ python3 -m yo.cli verify
 * Automatically skips ingestion and Q&A checks when Milvus Lite or the Ollama backend is missing, marking those sections with ⚠️ entries instead of failing the suite.
 * Persists telemetry under `data/logs/` (`test_summary.json`, `test_history.json`, `dependency_history.json`, `telemetry_summary.json`) and prints a banner summarizing release/namespace/health if Rich is available.
 
-### 4.10 `report audit` — Generate compliance reports
+### 4.10 `verify signature` — Confirm artifact authenticity
+
+```bash
+python3 -m yo.cli verify signature
+python3 -m yo.cli verify signature --json
+```
+
+* Validates the detached GPG signature (`data/logs/checksums/artifact_hashes.sig`) against the checksum manifest created during the last green verification run.
+* Prints the signer identity, release version, commit SHA, and health score on success; JSON mode emits the same payload for CI gates or scripted tooling.
+* Surfaces actionable guidance when signatures are missing or invalid—including reminders to run `yo cli verify` or fetch the latest signed artifacts.
+
+### 4.11 `verify clone` — Validate a fresh checkout
+
+```bash
+python3 -m yo.cli verify clone
+python3 -m yo.cli verify clone --json
+```
+
+* Reuses signature validation and compares `artifact_hashes.txt` with `origin/main` to prove a cloned or restored workspace matches the published artifacts.
+* Reports the most recent ledger entry (version, commit SHA, timestamp) pulled from `data/logs/verification_ledger.jsonl`.
+* Provides remediation hints when hashes drift, including rerunning `yo deps repair`, discarding local modifications, or pulling updated artifacts.
+
+### 4.12 `verify ledger` — Inspect signed history
+
+```bash
+python3 -m yo.cli verify ledger
+```
+
+* Prints up to ten of the latest verification ledger entries in reverse chronological order.
+* Each entry includes timestamp, release version, commit hash, health score, checksum manifest path, and signature file so audits and manual verification stay traceable.
+
+### 4.13 `report audit` — Generate compliance reports
 
 ```bash
 python3 -m yo.cli report audit
@@ -216,7 +247,7 @@ python3 -m yo.cli report audit --md --html
 * Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
 * CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
 
-### 4.11 `system` — Lifecycle tooling
+### 4.14 `system` — Lifecycle tooling
 
 ```bash
 python3 -m yo.cli system clean --dry-run
@@ -228,7 +259,7 @@ python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
 * `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
 * `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
 
-### 4.12 `help` — Discover commands and aliases
+### 4.15 `help` — Discover commands and aliases
 
 ```bash
 python3 -m yo.cli help

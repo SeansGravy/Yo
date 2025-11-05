@@ -246,6 +246,22 @@ EOF
           echo "Artifacts prepared: audit_report, checksums, signatures" >> $GITHUB_STEP_SUMMARY
           echo "Status: ⏸ Awaiting manual push" >> $GITHUB_STEP_SUMMARY
 
+      - name: Verify publish artifacts present
+        if: ${{ success() }}
+        run: |
+          for f in data/logs/push_instructions.txt data/logs/checksums/artifact_hashes.sig data/logs/checksums/artifact_signing_public.asc; do
+            if [ ! -f "$f" ]; then
+              echo "❌ Missing publish artifact: $f"
+              exit 1
+            fi
+            size=$(wc -c <"$f")
+            if [ "$size" -le 64 ]; then
+              echo "❌ $f appears too small ($size bytes)"
+              exit 1
+            fi
+            echo "✅ $f present ($size bytes)"
+          done
+
       - name: Verify signature on clone
         if: ${{ success() }}
         run: python3 -m yo.cli verify signature --json
