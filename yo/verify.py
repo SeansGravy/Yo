@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
+from yo.telemetry import build_telemetry_summary
+
 
 SUMMARY_LINE_PATTERN = re.compile(r"=+ (.+) =+")
 MISSING_IMPORT_PATTERN = re.compile(
@@ -199,6 +201,7 @@ def write_test_summary(result: str = "✅ Verify successful", **extra: Any) -> D
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     _append_history(summary)
     _write_badge(summary)
+    build_telemetry_summary()
     print(f"[Yo] Test summary written: {summary['timestamp']} -> {summary_path}")
     return summary
 

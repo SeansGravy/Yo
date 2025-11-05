@@ -24,6 +24,8 @@ from yo.telemetry import (
     load_dependency_history,
     load_test_history,
     load_test_summary,
+    load_telemetry_summary,
+    build_telemetry_summary,
 )
 
 
@@ -230,6 +232,7 @@ def dashboard(_: Request) -> HTMLResponse:
     history = load_test_history()
     dependencies = load_dependency_history(limit=5)
     trend = compute_trend(history, days=7)
+    telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
 
     status_line = "Unknown"
     if summary:
@@ -265,6 +268,31 @@ def dashboard(_: Request) -> HTMLResponse:
     except Exception as exc:  # pragma: no cover - defensive guard for dashboard
         namespace_section = f"<li>Error retrieving namespaces: {exc}</li>"
 
+    telemetry_block = ""
+    if telemetry_summary:
+        mean_rate = telemetry_summary.get("pass_rate_mean")
+        volatility = telemetry_summary.get("pass_rate_volatility")
+        duration_avg = telemetry_summary.get("duration_average")
+        mean_rate_display = f"{mean_rate * 100:.1f}%" if isinstance(mean_rate, (int, float)) else "n/a"
+        volatility_display = f"{volatility:.3f}" if isinstance(volatility, (int, float)) else "n/a"
+        duration_display = f"{duration_avg:.2f}s" if isinstance(duration_avg, (int, float)) else "n/a"
+        recurring = telemetry_summary.get("recurring_errors") or []
+        recurring_block = "".join(
+            f"<li>{issue['message']} ({issue['count']}x)</li>" for issue in recurring
+        ) or "<li>No recurring issues detected.</li>"
+        telemetry_block = f"""
+        <section>
+          <h2>Telemetry Insights</h2>
+          <ul>
+            <li>Average pass rate: {mean_rate_display}</li>
+            <li>Pass-rate volatility: {volatility_display}</li>
+            <li>Average runtime: {duration_display}</li>
+          </ul>
+          <h3>Top recurring issues</h3>
+          <ul>{recurring_block}</ul>
+        </section>
+        """
+
     html = f"""
     <html>
       <head>
@@ -294,6 +322,7 @@ def dashboard(_: Request) -> HTMLResponse:
           <h2>Dependency Events</h2>
           <ul>{dependency_lines}</ul>
         </section>
+        {telemetry_block}
         <section>
           <h2>Namespace Activity</h2>
           <ul>{namespace_section}</ul>

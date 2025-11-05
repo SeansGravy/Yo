@@ -34,6 +34,7 @@ jobs:
         if: always()
         run: |
           python3 -m yo.cli explain verify || true
+          ANALYTICS=$(python3 -m yo.cli telemetry analyze --json || echo "{}"); export ANALYTICS
           python3 - <<'PY'
 import json
 import os
@@ -42,6 +43,11 @@ from pathlib import Path
 logs_dir = Path("data/logs")
 summary_path = logs_dir / "test_summary.json"
 history_path = logs_dir / "test_history.json"
+analytics_env = os.environ.get("ANALYTICS", "{}")
+try:
+    analytics = json.loads(analytics_env)
+except json.JSONDecodeError:
+    analytics = {}
 
 if not summary_path.exists():
     print("No test summary produced by verify.")
@@ -67,6 +73,23 @@ else:
 if history_path.exists():
     history = json.loads(history_path.read_text(encoding="utf-8"))
     print(f"Telemetry history entries: {len(history)}")
+
+if analytics:
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    lines = ["", "### Yo Telemetry Insights"]
+    mean_rate = analytics.get("pass_rate_mean")
+    if isinstance(mean_rate, (int, float)):
+        display_rate = mean_rate * 100 if mean_rate <= 1 else mean_rate
+        lines.append(f"- Avg pass rate: {display_rate:.1f}%")
+    volatility = analytics.get("pass_rate_volatility")
+    if isinstance(volatility, (int, float)):
+        lines.append(f"- Pass-rate volatility: {volatility:.3f}")
+    duration = analytics.get("duration_average")
+    if isinstance(duration, (int, float)):
+        lines.append(f"- Avg duration: {duration:.2f}s")
+    if summary_file and len(lines) > 2:
+        with open(summary_file, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
 PY
 
       - name: Upload test results
@@ -78,5 +101,6 @@ PY
             data/logs/test_summary.json
             data/logs/test_history.json
             data/logs/dependency_history.json
+            data/logs/telemetry_summary.json
             data/logs/badge.md
             yo_test_results_*.log

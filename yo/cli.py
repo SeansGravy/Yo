@@ -28,6 +28,8 @@ from yo.telemetry import (
     load_dependency_history,
     load_test_history,
     load_test_summary,
+    build_telemetry_summary,
+    load_telemetry_summary,
     summarize_failures,
 )
 
@@ -483,10 +485,82 @@ def _handle_telemetry_report(_: argparse.Namespace, __: YoBrain | None = None) -
     print(f"Pass rate: {pass_rate:.1f}%")
 
 
+def _handle_telemetry_analyze(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    summary = build_telemetry_summary()
+    if not summary:
+        print("ℹ️  No telemetry data available yet. Run `python3 -m yo.cli verify` first.")
+        return
+
+    latest = summary.get("latest", {})
+    pass_rate_mean = summary.get("pass_rate_mean")
+    volatility = summary.get("pass_rate_volatility")
+    duration_avg = summary.get("duration_average")
+    recurring_errors = summary.get("recurring_errors", [])
+
+    if getattr(args, "json", False):
+        payload = {
+            "latest": latest,
+            "pass_rate_mean": pass_rate_mean,
+            "pass_rate_volatility": volatility,
+            "duration_average": duration_avg,
+            "recurring_errors": recurring_errors,
+            "daily_stats": summary.get("daily_stats", []),
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    def _arrow(delta: float | None) -> str:
+        if delta is None:
+            return ""
+        if delta > 0:
+            return "↑"
+        if delta < 0:
+            return "↓"
+        return "→"
+
+    history = load_test_history()
+    trend = compute_trend(history, days=2)
+    recent_rates = [entry.get("pass_rate_percent") for entry in trend if entry.get("pass_rate_percent") is not None]
+    delta = None
+    if len(recent_rates) >= 2:
+        delta = recent_rates[-1] - recent_rates[-2]
+
+    print("📈 Yo Telemetry Analysis\n")
+    if latest:
+        print(
+            f"Latest status: {latest.get('status')} ({latest.get('tests_passed', 0)}/{latest.get('tests_total', 0)} passed, {latest.get('duration_seconds')}s)"
+        )
+    if pass_rate_mean is not None:
+        arrow = _arrow(delta)
+        rate_display = pass_rate_mean * 100 if pass_rate_mean <= 1 else pass_rate_mean
+        print(f"Pass rate (avg): {rate_display:.1f}% {arrow}")
+    if volatility is not None:
+        print(f"Pass rate volatility: {volatility:.3f}")
+    if duration_avg is not None:
+        print(f"Average runtime: {duration_avg:.2f}s")
+
+    if recurring_errors:
+        print("\nTop recurring issues:")
+        for issue in recurring_errors:
+            print(f"   • {issue['message']} ({issue['count']}x)")
+    else:
+        print("\nTop recurring issues: none detected")
+
+    if summary.get("daily_stats"):
+        print("\nDaily overview (recent):")
+        for entry in summary["daily_stats"][:7]:
+            rate = entry.get("pass_rate")
+            rate_display = f"{rate * 100:.1f}%" if isinstance(rate, (int, float)) else "n/a"
+            duration = entry.get("duration_seconds")
+            duration_display = f"{duration:.2f}s" if isinstance(duration, (int, float)) else "n/a"
+            print(
+                f"   • {entry['day']}: {entry['runs']} runs, pass rate {rate_display}, avg duration {duration_display}"
+            )
 def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) -> None:
     summary = load_test_summary()
     history = load_test_history()
     dependency_history = load_dependency_history(limit=10)
+    telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
 
     if not summary:
         print("ℹ️  No verification telemetry available. Run `python3 -m yo.cli verify` first.")
@@ -505,6 +579,33 @@ def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) 
         print(f"Duration: {float(duration):.2f}s")
 
     missing_modules = summary.get("missing_modules") or []
+    payload = {
+        "status": status,
+        "tests_total": tests_total,
+        "tests_failed": tests_failed,
+        "duration_seconds": duration,
+        "missing_modules": missing_modules,
+        "telemetry": telemetry_summary,
+    }
+
+    compact = getattr(args, "compact", False)
+    if compact:
+        line = f"{status} — {summary.get('tests_passed', 0)}/{tests_total or 0} passed"
+        if duration is not None:
+            line += f" in {float(duration):.2f}s"
+        if missing_modules:
+            line += f"; missing modules: {', '.join(missing_modules)}"
+        elif tests_failed:
+            line += "; see log for failures"
+        else:
+            line += "; no failures detected"
+        print(line)
+        return
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return
+
     if missing_modules:
         print("\n⚠️  Missing modules detected:")
         for module in missing_modules:
@@ -527,7 +628,7 @@ def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) 
     if recent_missing:
         print("\n🧩 Recurring missing modules: " + ", ".join(recent_missing))
 
-    if dependency_history and (missing_modules or recent_missing):
+    if dependency_history and (missing_modules or recent_missing) and not compact:
         print("\n🛠  Recent dependency activity:")
         for event in dependency_history[-5:]:
             timestamp = event.get("timestamp")
@@ -537,6 +638,19 @@ def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) 
 
     if missing_modules:
         print("\n💡 Suggested action: run `python3 -m yo.cli deps repair` to attempt automatic installation.")
+
+    metrics = telemetry_summary or {}
+    if metrics and not compact:
+        mean_rate = metrics.get("pass_rate_mean")
+        volatility = metrics.get("pass_rate_volatility")
+        duration_avg = metrics.get("duration_average")
+        if mean_rate is not None:
+            display_rate = mean_rate * 100 if mean_rate <= 1 else mean_rate
+            print(f"\n📈 Avg pass rate (last runs): {display_rate:.1f}%")
+        if volatility is not None:
+            print(f"📉 Pass-rate volatility: {volatility:.3f}")
+        if duration_avg is not None:
+            print(f"⏱️  Average runtime: {duration_avg:.2f}s")
 
     if getattr(args, "web", False):
         try:
@@ -568,6 +682,7 @@ def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> N
     history = load_test_history(limit=10)
     dependency_history = load_dependency_history(limit=5)
     trend = compute_trend(history, days=7)
+    telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
 
     print("🖥️  Yo Developer Dashboard\n")
 
@@ -614,6 +729,24 @@ def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> N
     else:
         print("\nDependency Events: none recorded")
 
+    if telemetry_summary:
+        mean_rate = telemetry_summary.get("pass_rate_mean")
+        volatility = telemetry_summary.get("pass_rate_volatility")
+        duration_avg = telemetry_summary.get("duration_average")
+        print("\nTelemetry Insights:")
+        if mean_rate is not None:
+            display_rate = mean_rate * 100 if mean_rate <= 1 else mean_rate
+            print(f"   • Avg pass rate: {display_rate:.1f}%")
+        if volatility is not None:
+            print(f"   • Pass-rate volatility: {volatility:.3f}")
+        if duration_avg is not None:
+            print(f"   • Avg duration: {duration_avg:.2f}s")
+        recurring = telemetry_summary.get("recurring_errors") or []
+        if recurring:
+            print("   • Top recurring issues:")
+            for issue in recurring:
+                print(f"     - {issue['message']} ({issue['count']}x)")
+
 def _add_ns_options(parser: argparse.ArgumentParser) -> None:
     default_ns = _active_namespace_default()
     parser.add_argument(
@@ -659,12 +792,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ns_purge_parser = ns_sub.add_parser("purge", help="Delete a namespace and its data")
     ns_purge_parser.add_argument("name", nargs="?", help="Namespace to purge")
-    ns_purge_parser.add_argument("--ns", dest="name", help=argparse.SUPPRESS)
+    _add_ns_options(ns_purge_parser)
     ns_purge_parser.set_defaults(handler=_handle_ns_purge)
 
     ns_delete_parser = ns_sub.add_parser("delete", help=argparse.SUPPRESS)
     ns_delete_parser.add_argument("name", nargs="?", help=argparse.SUPPRESS)
-    ns_delete_parser.add_argument("--ns", dest="name", help=argparse.SUPPRESS)
+    _add_ns_options(ns_delete_parser)
     ns_delete_parser.set_defaults(handler=_handle_ns_purge)
 
     config_parser = subparsers.add_parser("config", help="Configuration management")
@@ -703,11 +836,17 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry_report = telemetry_sub.add_parser("report", help="Show recent test telemetry")
     telemetry_report.set_defaults(handler=_handle_telemetry_report)
 
+    telemetry_analyze = telemetry_sub.add_parser("analyze", help="Analyze test telemetry trends")
+    telemetry_analyze.add_argument("--json", action="store_true", help="Output raw JSON payload")
+    telemetry_analyze.set_defaults(handler=_handle_telemetry_analyze)
+
     explain_parser = subparsers.add_parser("explain", help="Explain recent operations")
     explain_sub = explain_parser.add_subparsers(dest="explain_command", required=True)
 
     explain_verify = explain_sub.add_parser("verify", help="Explain the latest verification run")
     explain_verify.add_argument("--web", action="store_true", help="Fetch external context for missing packages")
+    explain_verify.add_argument("--json", action="store_true", help="Output explanation as JSON")
+    explain_verify.add_argument("--compact", action="store_true", help="Show condensed summary")
     explain_verify.set_defaults(handler=_handle_explain_verify)
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Show the developer dashboard")
