@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import cmd
 import importlib
+import json
 import os
 import shlex
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +19,33 @@ except ImportError:  # pragma: no cover
     readline = None  # type: ignore[assignment]
 
 from yo.brain import YoBrain
+from yo.events import publish_event
+from yo import recovery
+
+try:  # pragma: no cover - optional rich dependency
+    from rich.console import Console
+    from rich.panel import Panel
+except ImportError:  # pragma: no cover
+    Console = Panel = None
+
+console = Console() if 'Console' in globals() and Console is not None else None
 from yo.logging_utils import get_logger
 
 LOGGER = get_logger(__name__)
 HISTORY_PATH = Path("data/logs/shell_history.txt")
+SHELL_LOG_DIR = recovery.SESSION_ROOT / "shell"
+SHELL_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _append_shell_record(record: dict[str, Any]) -> None:
+    payload = dict(record)
+    payload.setdefault("timestamp", datetime.utcnow().isoformat() + "Z")
+    log_path = SHELL_LOG_DIR / f"shell_{datetime.utcnow().strftime('%Y%m%d')}.jsonl"
+    try:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
 
 
 class YoShell(cmd.Cmd):
@@ -31,8 +56,75 @@ class YoShell(cmd.Cmd):
         super().__init__()
         HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._load_history()
-        self.brain = YoBrain()
+
+        self.console = console
+        namespace_hint: str | None = None
+        resume_message = ""
+        resume = recovery.load_pending_shell()
+        if resume:
+            metadata = resume.get("metadata") or {}
+            suggested_ns = metadata.get("namespace")
+            resume_cwd = metadata.get("cwd")
+            choice = "n"
+            if sys.stdin.isatty():
+                prompt_message = (
+                    f"⚠️ Incomplete shell session detected (started {resume.get('created_at')}). "
+                    "Resume? [y/N]: "
+                )
+                choice = input(prompt_message).strip().lower() or "n"
+            if choice.startswith("y"):
+                namespace_hint = suggested_ns
+                if resume_cwd and Path(resume_cwd).exists():
+                    try:
+                        os.chdir(resume_cwd)
+                    except OSError:
+                        pass
+                resume_message = "Resumed previous session context."
+            else:
+                resume_message = "Previous session archived."
+            recovery.archive_session("shell", resume.get("session_id"))
+
+        self.brain = YoBrain(namespace=namespace_hint)
         self.namespace = self.brain.active_namespace
+        if namespace_hint and namespace_hint != self.namespace:
+            try:
+                self.brain.ns_switch(namespace_hint)
+                self.namespace = namespace_hint
+            except Exception:  # pragma: no cover - defensive guard
+                pass
+
+        self.recovery_session_id = recovery.start_session(
+            "shell",
+            {
+                "namespace": self.namespace,
+                "cwd": os.getcwd(),
+            },
+        )
+        _append_shell_record(
+            {
+                "event": "start",
+                "session_id": self.recovery_session_id,
+                "namespace": self.namespace,
+                "cwd": os.getcwd(),
+            }
+        )
+        publish_event(
+            "shell_start",
+            {
+                "session_id": self.recovery_session_id,
+                "namespace": self.namespace,
+                "cwd": os.getcwd(),
+            },
+        )
+        self._session_closed = False
+        self._update_prompt()
+        banner = f"🛠️ Yo Shell ready — namespace: {self.namespace}"
+        if self.console and Panel:
+            self.console.print(Panel.fit(banner, border_style="cyan"))
+        else:
+            print(banner)
+        if resume_message:
+            print(f"ℹ️ {resume_message}")
 
     # ------------------------------------------------------------------
     # Chat helpers
@@ -74,6 +166,7 @@ class YoShell(cmd.Cmd):
             return
         name = tokens[0]
         self.namespace = name
+        self._update_prompt()
         print(f"Namespace set to {self.namespace}")
 
     def do_verify(self, arg: str) -> None:
@@ -148,10 +241,12 @@ class YoShell(cmd.Cmd):
     def do_exit(self, arg: str) -> bool:  # noqa: D401 - cmd requirement
         """Exit the shell."""
 
+        self._close_session()
         return True
 
     def do_EOF(self, arg: str) -> bool:  # noqa: N802 - cmd naming
         print()
+        self._close_session()
         return True
 
     # ------------------------------------------------------------------
@@ -174,12 +269,75 @@ class YoShell(cmd.Cmd):
                 pass
         return super().postcmd(stop, line)
 
+    def onecmd(self, line: str) -> bool:
+        result = super().onecmd(line)
+        if line.strip():
+            self._log_command(line)
+        return result
+
+    def _log_command(self, line: str) -> None:
+        session_id = getattr(self, "recovery_session_id", None)
+        if not session_id:
+            return
+        record = {
+            "event": "command",
+            "session_id": session_id,
+            "command": line,
+            "namespace": self.namespace,
+            "cwd": os.getcwd(),
+        }
+        _append_shell_record(record)
+        publish_event("shell_command", record)
+        recovery.update_session(
+            "shell",
+            session_id,
+            {
+                "namespace": self.namespace,
+                "cwd": os.getcwd(),
+                "last_command": line,
+            },
+        )
+
+    def _update_prompt(self) -> None:
+        self.prompt = f"Yo[{self.namespace}]> "
+
+    def _close_session(self) -> None:
+        if getattr(self, "_session_closed", False):
+            return
+        self._session_closed = True
+        session_id = getattr(self, "recovery_session_id", None)
+        if session_id:
+            recovery.complete_session("shell", session_id)
+            _append_shell_record(
+                {
+                    "event": "end",
+                    "session_id": session_id,
+                    "namespace": self.namespace,
+                    "cwd": os.getcwd(),
+                }
+            )
+            publish_event(
+                "shell_end",
+                {
+                    "session_id": session_id,
+                    "namespace": self.namespace,
+                    "cwd": os.getcwd(),
+                },
+            )
+            self.recovery_session_id = None
+
+    def close_session(self) -> None:
+        self._close_session()
+
 
 def run_shell() -> None:
+    shell = YoShell()
     try:
-        YoShell().cmdloop()
+        shell.cmdloop()
     except KeyboardInterrupt:
         print("\nExiting shell.")
+    finally:
+        shell.close_session()
 
 
 def _cli():

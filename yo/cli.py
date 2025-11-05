@@ -11,7 +11,8 @@ import subprocess
 import sys
 import shutil
 import time
-from datetime import datetime, timedelta
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from statistics import mean
 from importlib import metadata as importlib_metadata
 from importlib import util as import_util
@@ -60,6 +61,9 @@ from yo.system_tools import (
     system_snapshot,
     system_restore,
 )
+from yo import recovery
+from yo.chat import CHAT_DAILY_DIR
+from yo.events import EVENT_LOG_DIR, publish_event
 
 try:  # pragma: no cover - optional dependency
     from rich.console import Console
@@ -73,6 +77,15 @@ except ImportError:  # pragma: no cover - rich is optional
     Text = None  # type: ignore[assignment]
 
 console: Optional[Console] = Console() if Console is not None else None
+
+SESSION_LOG_ROOT = recovery.SESSION_ROOT
+SHELL_LOG_DIR = SESSION_LOG_ROOT / "shell"
+SHELL_LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_KINDS = {
+    "events": EVENT_LOG_DIR,
+    "chat": CHAT_DAILY_DIR,
+    "shell": SHELL_LOG_DIR,
+}
 
 
 def _rich_print(*args: object, style: str | None = None) -> None:
@@ -120,6 +133,102 @@ def _display_verify_banner(summary: Dict[str, Any]) -> None:
         print(header)
 
 
+def _parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_log_path(kind: str) -> Path | None:
+    directory = LOG_KINDS.get(kind)
+    if directory is None:
+        return None
+    candidates = []
+    for path in directory.glob("*.jsonl"):
+        if not path.is_file():
+            continue
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][1]
+
+
+def _read_log_tail(log_path: Path, lines: int) -> list[str]:
+    if lines <= 0:
+        lines = 20
+    buffer: deque[str] = deque(maxlen=lines)
+    try:
+        with log_path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                buffer.append(raw.rstrip("\n"))
+    except OSError:
+        return []
+    return list(buffer)
+
+
+def _format_log_entry(kind: str, raw_line: str) -> str:
+    try:
+        record = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return raw_line
+
+    timestamp = record.get("timestamp", "")
+
+    if kind == "chat":
+        event = record.get("event")
+        session = record.get("session_id", "unknown")
+        namespace = record.get("namespace", "default")
+        if event == "token":
+            token = record.get("token", "")
+            return f"{timestamp} [{namespace}:{session}] token: {token}"
+        if event == "message":
+            user = record.get("user", "")
+            reply = record.get("assistant", "")
+            return f"{timestamp} [{namespace}:{session}] user: {user!r} → assistant: {reply!r}"
+        if event == "complete":
+            reply = record.get("assistant", "")
+            return f"{timestamp} [{namespace}:{session}] complete: {reply!r}"
+        return f"{timestamp} [{namespace}:{session}] {event}"
+
+    if kind == "events":
+        event_type = record.get("type", "event")
+        payload = {
+            key: value
+            for key, value in record.items()
+            if key not in {"type", "timestamp"} and value not in ("", None)
+        }
+        detail = ", ".join(f"{key}={value}" for key, value in payload.items())
+        detail_text = f": {detail}" if detail else ""
+        return f"{timestamp} {event_type}{detail_text}"
+
+    if kind == "shell":
+        event = record.get("event", "event")
+        session = record.get("session_id", "unknown")
+        namespace = record.get("namespace", "default")
+        if event == "command":
+            command = record.get("command", "")
+            return f"{timestamp} [{namespace}:{session}] command -> {command}"
+        if event == "start":
+            cwd = record.get("cwd", "")
+            return f"{timestamp} [{namespace}:{session}] shell started (cwd={cwd})"
+        if event == "end":
+            return f"{timestamp} [{namespace}:{session}] shell ended"
+        return f"{timestamp} [{namespace}:{session}] {event}"
+
+    return raw_line
+
+
 Handler = Callable[[argparse.Namespace, YoBrain | None], None]
 
 MAIN_PARSER: Optional[argparse.ArgumentParser] = None
@@ -144,6 +253,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "verify": "Validation",
     "doctor": "Validation",
     "health": "Insights",
+    "logs": "Insights",
     "system": "Maintenance",
     "report": "Insights",
     "help": "Utilities",
@@ -1037,9 +1147,108 @@ def _handle_telemetry_archives_list(args: argparse.Namespace, __: YoBrain | None
         print(f"   • {entry}")
 
 
+def _run_health_monitor(json_output: bool) -> None:
+    now = datetime.now(timezone.utc)
+    summary = load_test_summary()
+    telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
+
+    result: Dict[str, Any] = {
+        "timestamp": now.isoformat().replace("+00:00", "Z"),
+        "status": "ok",
+        "summary_timestamp": None,
+        "hours_since_last_run": None,
+        "pass_rate": None,
+        "health_score": telemetry_summary.get("health_score") if telemetry_summary else None,
+        "latest_status": None,
+        "reasons": [],
+    }
+
+    status: Status = "ok"
+    reasons: list[str] = []
+
+    if not summary:
+        status = "fail"
+        reasons.append("No verification summary found.")
+    else:
+        summary_timestamp = summary.get("timestamp")
+        result["summary_timestamp"] = summary_timestamp
+        parsed_ts = _parse_iso8601(summary_timestamp) if isinstance(summary_timestamp, str) else None
+        if parsed_ts:
+            age_hours = (now - parsed_ts).total_seconds() / 3600
+            result["hours_since_last_run"] = round(age_hours, 2)
+            if age_hours > 24:
+                status = "fail"
+                reasons.append("Last verification run is more than 24 hours old.")
+            elif age_hours > 12 and status != "fail":
+                status = "warn"
+                reasons.append("Last verification run is over 12 hours old.")
+        else:
+            status = "warn"
+            reasons.append("Latest verification timestamp is missing or invalid.")
+
+        latest_status = summary.get("status")
+        if latest_status is not None:
+            result["latest_status"] = latest_status
+            if isinstance(latest_status, str) and not latest_status.startswith("✅"):
+                status = "fail"
+                reasons.append(f"Latest run reported: {latest_status}")
+
+        pass_rate_raw = summary.get("pass_rate")
+        if isinstance(pass_rate_raw, (int, float)):
+            pass_rate_pct = pass_rate_raw * 100 if pass_rate_raw <= 1 else pass_rate_raw
+            result["pass_rate"] = round(pass_rate_pct, 2)
+            if pass_rate_pct < 95:
+                status = "fail"
+                reasons.append(f"Pass rate below threshold ({pass_rate_pct:.1f}%).")
+        else:
+            reasons.append("Pass rate unavailable.")
+            if status == "ok":
+                status = "warn"
+
+    if telemetry_summary and isinstance(telemetry_summary, dict):
+        generated_at = telemetry_summary.get("generated_at")
+        if generated_at:
+            result["telemetry_generated_at"] = generated_at
+
+    result["status"] = status
+    result["reasons"] = reasons or ["All checks passed."]
+
+    logs_dir = Path("data/logs")
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    monitor_path = logs_dir / "health_monitor.jsonl"
+    try:
+        with monitor_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(result) + "\n")
+    except OSError:
+        pass
+    result["log_path"] = str(monitor_path)
+
+    if json_output:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"🩺 Health monitor status: {status.upper()}")
+        for reason in result["reasons"]:
+            print(f"   • {reason}")
+        if result.get("pass_rate") is not None:
+            print(f"   • Pass rate: {result['pass_rate']:.2f}%")
+        if result.get("hours_since_last_run") is not None:
+            print(f"   • Hours since last run: {result['hours_since_last_run']:.2f}")
+        if result.get("health_score") is not None:
+            print(f"   • Health score: {result['health_score']}")
+
+    if status == "fail":
+        raise SystemExit(1)
+
+
 def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -> None:
     action = getattr(args, "action", "report") or "report"
     if action != "report":
+        if action == "monitor":
+            _run_health_monitor(getattr(args, "json", False))
+            return
         raise SystemExit(f"Unknown health action '{action}'. Try `yo health report`.")
 
     telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
@@ -1483,6 +1692,36 @@ def _handle_verify_clone(args: argparse.Namespace, __: YoBrain | None = None) ->
         print("ℹ️  Unable to compare checksum against origin/main.")
         if clone_payload.get("remote_error"):
             print(clone_payload["remote_error"])
+
+
+def _handle_logs_tail(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    kind = getattr(args, "log_type", "events") or "events"
+    if kind not in LOG_KINDS:
+        raise SystemExit(f"Unknown log type '{kind}'. Choose from: {', '.join(sorted(LOG_KINDS))}.")
+
+    log_path = _latest_log_path(kind)
+    tail_lines: list[str] = []
+    formatted_lines: list[str] = []
+    if log_path:
+        tail_lines = _read_log_tail(log_path, getattr(args, "lines", 20) or 20)
+        formatted_lines = [_format_log_entry(kind, line) for line in tail_lines]
+
+    if getattr(args, "json", False):
+        payload = {
+            "kind": kind,
+            "log_path": str(log_path) if log_path else None,
+            "lines": tail_lines,
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    if not log_path or not tail_lines:
+        print(f"ℹ️  No {kind} logs recorded yet.")
+        return
+
+    print(f"📄 Tail of {kind} log ({log_path}):")
+    for line in formatted_lines:
+        print(f"   • {line}")
 
 
 def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -2064,6 +2303,25 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry_archives = telemetry_sub.add_parser("archives", help="List telemetry archive files", description="List telemetry archives")
     telemetry_archives.add_argument("--limit", type=int, help="Number of recent archives to show")
     telemetry_archives.set_defaults(handler=_handle_telemetry_archives_list)
+
+    logs_parser = _add_top_level("logs", help_text="Inspect session and event logs", category="Insights")
+    logs_sub = logs_parser.add_subparsers(dest="logs_command", required=True)
+    logs_tail = logs_sub.add_parser("tail", help="Tail the latest log file", description="Tail session logs")
+    logs_tail.add_argument(
+        "--type",
+        dest="log_type",
+        choices=sorted(LOG_KINDS),
+        default="events",
+        help="Log type to inspect (default: events)",
+    )
+    logs_tail.add_argument(
+        "--lines",
+        type=int,
+        default=20,
+        help="Number of lines to display (default: 20)",
+    )
+    logs_tail.add_argument("--json", action="store_true", help="Output raw JSON payload")
+    logs_tail.set_defaults(handler=_handle_logs_tail)
 
     health_parser = _add_top_level("health", help_text="Overall system health insights", category="Insights")
     health_parser.add_argument("action", nargs="?", default="report", help=argparse.SUPPRESS)

@@ -280,7 +280,18 @@ python3 -m yo.cli release info v0.5.0 --json
 * `info <version>` loads the stored manifest, showing the signer, bundle checksum, and signature paths for that specific build; `--json` emits machine-friendly metadata.
 * Combine with `yo package release` to validate packaging before pushing artifacts upstream.
 
-### 4.17 `report audit` — Generate compliance reports
+### 4.17 `health` — Review or monitor system status
+
+```bash
+python3 -m yo.cli health report
+python3 -m yo.cli health monitor --json
+```
+
+* `report` combines telemetry averages, dependency activity, and recurring failures into a concise health summary. Use `--json` to feed dashboards or scripts.
+* `monitor` enforces freshness thresholds (pass rate ≥ 95 %, latest run < 24 h old), appends results to `data/logs/health_monitor.jsonl`, and exits with a non-zero status on failure so CI can alert operators.
+* The scheduled workflow `.github/workflows/health-monitor.yml` runs hourly, uploads the JSONL log as an artifact, and publishes the most recent monitor result in the Actions step summary.
+
+### 4.18 `report audit` — Generate compliance reports
 
 ```bash
 python3 -m yo.cli report audit
@@ -293,7 +304,7 @@ python3 -m yo.cli report audit --md --html
 * Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
 * CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
 
-### 4.18 `system` — Lifecycle tooling
+### 4.19 `system` — Lifecycle tooling
 
 ```bash
 python3 -m yo.cli system clean --dry-run
@@ -307,7 +318,18 @@ python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
 * `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
 * `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
 
-### 4.19 `help` — Discover commands and aliases
+### 4.20 `logs` — Tail persistent history
+
+```bash
+python3 -m yo.cli logs tail --type events
+python3 -m yo.cli logs tail --type chat --json --lines 5
+```
+
+* Logs from chats, shell sessions, and event broadcasts are persisted under `data/logs/sessions/` with daily JSONL files. They survive restarts for root-cause analysis.
+* `tail` picks the most recent log of the requested type (`events`, `chat`, or `shell`) and prints a formatted summary; `--json` returns the raw lines for automation.
+* Combine with `yo dashboard --events` for a live stream, then fall back to `yo logs tail` when you need to inspect historical context or triage CI failures.
+
+### 4.21 `help` — Discover commands and aliases
 
 ```bash
 python3 -m yo.cli help
@@ -320,7 +342,7 @@ python3 -m yo.cli h     # alias for `yo health report`
 * Subcommand help surfaces nested actions like `namespace stats` and `namespace drift`.
 * Aliases keep workflows fast; Rich-based color output is bundled via `requirements.txt`.
 
-### 4.20 `shell` — Interactive developer REPL
+### 4.22 `shell` — Interactive developer REPL
 
 ```bash
 python3 -m yo.cli shell

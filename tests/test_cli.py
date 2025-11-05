@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -398,6 +399,98 @@ def test_handle_config_edit_uses_editor(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     assert env_path.exists()
     assert calls == [["test-editor", str(env_path)]]
+
+
+def test_handle_logs_tail_outputs_formatted_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    events_dir = tmp_path / "data/logs/sessions/events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    log_path = events_dir / "events_20250101.jsonl"
+    entry = {
+        "type": "chat_message",
+        "timestamp": "2025-01-01T12:00:00Z",
+        "session_id": "abc",
+        "namespace": "default",
+    }
+    log_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    cli._handle_logs_tail(argparse.Namespace(log_type="events", lines=5, json=False), None)
+
+    output = capsys.readouterr().out
+    assert "Tail of events log" in output
+    assert "chat_message" in output
+
+
+def test_handle_logs_tail_json_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    chat_dir = tmp_path / "data/logs/sessions/chat"
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    log_path = chat_dir / "chat_20250102.jsonl"
+    log_path.write_text(
+        json.dumps({"event": "message", "session_id": "s1", "namespace": "default", "user": "hi"}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    cli._handle_logs_tail(argparse.Namespace(log_type="chat", lines=1, json=True), None)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "chat"
+    assert payload["lines"]
+    assert payload["log_path"].endswith("chat_20250102.jsonl")
+
+
+def test_health_monitor_success_creates_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    now = datetime.now(timezone.utc)
+    summary = {
+        "timestamp": now.isoformat(),
+        "status": "✅ Verify successful",
+        "tests_total": 10,
+        "tests_passed": 10,
+        "pass_rate": 1.0,
+    }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_test_summary", lambda: summary)
+    monkeypatch.setattr(cli, "load_telemetry_summary", lambda: {"health_score": 97.2})
+    monkeypatch.setattr(cli, "build_telemetry_summary", lambda: {"health_score": 97.2})
+
+    cli._handle_health_report(argparse.Namespace(action="monitor", json=False), None)
+
+    output = capsys.readouterr().out
+    assert "Health monitor status: OK" in output
+    monitor_path = Path("data/logs/health_monitor.jsonl")
+    assert monitor_path.exists()
+    lines = [line for line in monitor_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    payload = json.loads(lines[-1])
+    assert payload["status"] == "ok"
+    assert payload["pass_rate"] == 100.0
+
+
+def test_health_monitor_detects_stale_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    past = datetime.now(timezone.utc) - timedelta(hours=36)
+    summary = {
+        "timestamp": past.isoformat(),
+        "status": "✅ Verify successful",
+        "tests_total": 10,
+        "tests_passed": 10,
+        "pass_rate": 1.0,
+    }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_test_summary", lambda: summary)
+    monkeypatch.setattr(cli, "load_telemetry_summary", lambda: {"health_score": 92.0})
+    monkeypatch.setattr(cli, "build_telemetry_summary", lambda: {"health_score": 92.0})
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli._handle_health_report(argparse.Namespace(action="monitor", json=False), None)
+
+    assert excinfo.value.code == 1
+    _ = capsys.readouterr()
+    monitor_path = Path("data/logs/health_monitor.jsonl")
+    assert monitor_path.exists()
+    payload = json.loads(monitor_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert payload["status"] == "fail"
+    assert any("24" in reason for reason in payload.get("reasons", []))
 
 
 def test_handle_chat_single_message(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

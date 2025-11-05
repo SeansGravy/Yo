@@ -1,0 +1,66 @@
+name: Yo Health Monitor
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  health-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+
+      - name: Run health monitor
+        run: |
+          python3 -m yo.cli health monitor --json | tee monitor_output.json
+
+      - name: Append summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          summary_path = Path("monitor_output.json")
+          if not summary_path.exists():
+            raise SystemExit("monitor_output.json not found")
+
+          data = json.loads(summary_path.read_text(encoding="utf-8"))
+          summary_file = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = [
+              "### Health Monitor",
+              f"Status: {data.get('status', 'unknown')}",
+              f"Pass rate: {data.get('pass_rate', 'n/a')}",
+              f"Hours since last run: {data.get('hours_since_last_run', 'n/a')}",
+          ]
+          reasons = data.get("reasons") or []
+          if reasons:
+              lines.append("Reasons:")
+              lines.extend(f"- {reason}" for reason in reasons)
+          lines.append("")
+          with summary_file.open("a", encoding="utf-8") as handle:
+              handle.write("\n".join(lines))
+              handle.write("\n")
+          PY
+
+      - name: Upload health monitor artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-monitor
+          path: |
+            monitor_output.json
+            data/logs/health_monitor.jsonl

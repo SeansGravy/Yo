@@ -95,6 +95,13 @@ scripts/setup_yo_dev.sh
 - The Local CI workflow publishes these artifacts, copies the Markdown into `docs/RELEASE_NOTES.md`, and pushes doc updates alongside the latest tag.
 - CI also refreshes `docs/latest.html`, giving GitHub Pages an always-current audit snapshot.
 
+## 📡 Monitoring & Persistent Logs
+
+- Chat transcripts, shell sessions, and event broadcasts append to `data/logs/sessions/` so you can inspect history across restarts. Each day receives its own JSONL file.
+- `yo logs tail --type events` (or `chat` / `shell`) prints a formatted tail of the latest log; add `--json` for machine-readable output in scripts and CI.
+- `yo health monitor [--json]` evaluates the most recent verification run, health score, and update cadence, writing results to `data/logs/health_monitor.jsonl`. A failing status exits with code 1 so CI or CRON jobs can alert immediately.
+- The hourly GitHub Actions workflow `.github/workflows/health-monitor.yml` runs the same command and uploads the JSONL log, giving the team a rolling audit of system freshness and pass rates.
+
 ## 🔐 Signature & Clone Verification
 
 - `yo verify signature [--json]` confirms the detached GPG signature in `data/logs/checksums/artifact_hashes.sig` matches the checksum file. Successful runs report the signer, version, and health metadata; JSON mode emits a machine-friendly payload for CI gates.
@@ -127,7 +134,7 @@ scripts/setup_yo_dev.sh
 - `yo chat --stream "Explain RAG"` prints tokens as soon as the model generates them; the web UI receives the same token events over `/ws/chat/<session>`.
 - `yo shell` launches an always-on developer console with history, auto-completion (when available), and shortcuts for `verify`, `telemetry analyze`, `deps check`, and more.
 - `/chat` in the Lite UI keeps a persistent message list, streams responses as they arrive, and remembers the current session via local storage.
-- Real-time dashboards now run over `/ws/updates`; `/dashboard --live` brings those pulses to the terminal, and `/dashboard --events` tails the new event log in `data/logs/events.jsonl`.
+- Real-time dashboards now run over `/ws/updates`; `yo dashboard --live` brings those pulses to the terminal, `yo dashboard --events` streams the event feed, and `yo logs tail --type events` inspects the persisted history in `data/logs/sessions/events_*`.
 
 ## ⚙️ Testing
 ```bash

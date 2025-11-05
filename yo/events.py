@@ -10,8 +10,20 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 MAX_EVENT_HISTORY = 200
-EVENT_LOG_PATH = Path("data/logs/events.jsonl")
-EVENT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+SESSION_LOG_DIR = Path("data/logs/sessions")
+EVENT_LOG_DIR = SESSION_LOG_DIR / "events"
+EVENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _log_event(event: Dict[str, Any]) -> None:
+    date_token = datetime.utcnow().strftime("%Y%m%d")
+    log_path = EVENT_LOG_DIR / f"events_{date_token}.jsonl"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event) + "\n")
+    except OSError:
+        pass
 
 
 class EventBus:
@@ -40,11 +52,7 @@ class EventBus:
         async with self._lock:
             self._history.append(event)
             subscribers = tuple(self._subscribers)
-        try:
-            with EVENT_LOG_PATH.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event) + "\n")
-        except OSError:
-            pass
+        _log_event(event)
         for queue in subscribers:
             try:
                 queue.put_nowait(event)

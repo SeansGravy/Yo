@@ -12,7 +12,11 @@ from typing import Any, Dict, List, Tuple
 
 from yo.events import publish_event
 
-CHAT_LOG_DIR = Path("data/logs/chat_sessions")
+SESSION_ROOT = Path("data/logs/sessions")
+CHAT_DAILY_DIR = SESSION_ROOT / "chat"
+CHAT_SESSION_DIR = SESSION_ROOT / "chat_sessions"
+for directory in (CHAT_DAILY_DIR, CHAT_SESSION_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -90,6 +94,16 @@ class ChatSessionStore:
             session.updated_at = datetime.utcnow().isoformat() + "Z"
             history_snapshot = session.as_history()
             self._write_transcript(session)
+            self._append_daily_record(
+                {
+                    "event": "message",
+                    "session_id": session.session_id,
+                    "namespace": namespace,
+                    "user": message,
+                    "assistant": reply_text,
+                    "timestamp": session.updated_at,
+                }
+            )
 
         publish_event(
             "chat_message",
@@ -149,6 +163,16 @@ class ChatSessionStore:
                     session.updated_at = datetime.utcnow().isoformat() + "Z"
                     history_snapshot = session.as_history()
                     self._write_transcript(session)
+                    self._append_daily_record(
+                        {
+                            "event": "complete",
+                            "session_id": session.session_id,
+                            "namespace": namespace,
+                            "user": message,
+                            "assistant": reply_text,
+                            "timestamp": session.updated_at,
+                        }
+                    )
 
                 metadata = {
                     "context": chunk.get("context"),
@@ -175,11 +199,20 @@ class ChatSessionStore:
                         "token": token,
                     },
                 )
+                self._append_daily_record(
+                    {
+                        "event": "token",
+                        "session_id": session.session_id,
+                        "namespace": namespace,
+                        "token": token,
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                    }
+                )
 
         raise RuntimeError("Streaming chat ended unexpectedly without completion.")
 
     def _write_transcript(self, session: ChatSession) -> None:
-        transcript_path = CHAT_LOG_DIR / f"chat_{session.session_id}.json"
+        transcript_path = CHAT_SESSION_DIR / f"chat_{session.session_id}.json"
         transcript = {
             "session_id": session.session_id,
             "namespace": session.namespace,
@@ -189,5 +222,16 @@ class ChatSessionStore:
         }
         try:
             transcript_path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _append_daily_record(self, event: Dict[str, Any]) -> None:
+        record = {**event}
+        record.setdefault("timestamp", datetime.utcnow().isoformat() + "Z")
+        date_token = datetime.utcnow().strftime("%Y%m%d")
+        log_path = CHAT_DAILY_DIR / f"chat_{date_token}.jsonl"
+        try:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
         except OSError:
             pass
