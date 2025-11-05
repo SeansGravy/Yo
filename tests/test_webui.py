@@ -158,6 +158,9 @@ def dummy_client(monkeypatch: pytest.MonkeyPatch, healthy_backends: BackendSumma
             history = [{"user": message, "assistant": reply}]
             return ("session-1", reply, history, {"context": "ctx", "citations": ["doc.md"]})
 
+        def stream(self, **kwargs):
+            return self.send(**kwargs)
+
     monkeypatch.setattr(webui, "chat_store", StubChatStore())
     (logs_dir / "verification_ledger.jsonl").write_text(json.dumps({
         "timestamp": "2025-01-01T00:00:00Z",
@@ -303,11 +306,12 @@ def test_config_endpoints(dummy_client: tuple[TestClient, DummyBrain], monkeypat
 def test_chat_endpoint(dummy_client: tuple[TestClient, DummyBrain]) -> None:
     client, _ = dummy_client
 
-    resp = client.post("/api/chat", json={"namespace": "default", "message": "Hello"})
+    resp = client.post("/api/chat", json={"namespace": "default", "message": "Hello", "stream": True})
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["reply"].startswith("Echo")
     assert payload["history"][0]["user"] == "Hello"
+    assert payload["stream"] is True
 
 
 def test_status_endpoint_disables_ingestion_when_backends_missing(

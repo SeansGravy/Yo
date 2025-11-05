@@ -126,7 +126,19 @@ python3 -m yo.cli ask "Latest LangChain updates" --ns research --web
 * Prints the context Yo used before streaming the response.
 * `--web` blends cached or freshly-fetched DuckDuckGo snippets (24h TTL).
 
-### 4.3 `summarize` — Summarize a namespace
+### 4.3 `chat` — Multi-turn conversation
+
+```bash
+python3 -m yo.cli chat "Summarize today's ingestion" --ns research
+python3 -m yo.cli chat --stream "Explain vector search" --ns research
+```
+
+* Maintains a short-term chat history per namespace so follow-up questions stay contextual.
+* `--stream` streams tokens as the response is generated—ideal for long answers or demonstrations.
+* Rich citations (when available) print beneath each reply so you can trace the source documents quickly.
+* The new `/chat` web workspace mirrors the CLI: sessions persist in local storage and token events arrive live via WebSockets.
+
+### 4.4 `summarize` — Summarize a namespace
 
 ```bash
 python3 -m yo.cli summarize --ns research
@@ -135,7 +147,7 @@ python3 -m yo.cli summarize --ns research
 * Loads up to 500 stored chunks and asks the LLM for a narrative summary.
 * Errors if the namespace is empty or missing.
 
-### 4.4 `namespace` — Manage namespaces
+### 4.5 `namespace` — Manage namespaces
 
 ```bash
 python3 -m yo.cli namespace list            # alias: `yo ns list`
@@ -147,7 +159,7 @@ python3 -m yo.cli namespace purge scratch
 * `switch <name>` updates the active namespace, persisting the choice to `data/namespace_state.json` and pointing the local web cache at a namespace-specific file.
 * `purge <name>` drops the Milvus collection, prunes namespace metadata, and automatically falls back to a safe active namespace.
 
-### 4.5 `config` — Manage defaults
+### 4.6 `config` — Manage defaults
 
 ```bash
 python3 -m yo.cli config view
@@ -161,7 +173,7 @@ python3 -m yo.cli config reset --ns research
 * `reset [key]` removes overrides globally or for a namespace so YoBrain falls back to defaults (`ollama:llama3` and `ollama:nomic-embed-text`).
 * `.env.example` lists recognised variables (`YO_MODEL`, `YO_EMBED_MODEL`, `YO_NAMESPACE`, `YO_DB_URI`, `YO_DATA_DIR`, and optional cloud API keys). Copy it to `.env` to pin local defaults.
 
-### 4.6 `cache` — Inspect or clear web cache
+### 4.7 `cache` — Inspect or clear web cache
 
 ```bash
 python3 -m yo.cli cache list
@@ -171,7 +183,7 @@ python3 -m yo.cli cache clear
 * `list` prints cached queries with timestamps.
 * `clear` removes `data/web_cache.json` if it exists.
 
-### 4.7 `compact` — Vacuum the database
+### 4.8 `compact` — Vacuum the database
 
 ```bash
 python3 -m yo.cli compact
@@ -181,7 +193,7 @@ python3 -m yo.cli compact
 * Prints the size delta (MiB before/after).
 * Yo automatically triggers compaction when the database grows beyond ~100 MiB after ingestion.
 
-### 4.8 `doctor` — Diagnose local setup issues
+### 4.9 `doctor` — Diagnose local setup issues
 
 ```bash
 python3 -m yo.cli doctor
@@ -192,7 +204,7 @@ python3 -m yo.cli doctor
 * Reports whether the Milvus Lite runtime can be imported so vector-store operations don’t fail later.
 * Attempts to initialize `YoBrain` so Milvus Lite connectivity problems show up immediately.
 
-### 4.9 `verify` — Run the regression suite
+### 4.10 `verify` — Run the regression suite
 
 ```bash
 python3 -m yo.cli verify
@@ -203,7 +215,7 @@ python3 -m yo.cli verify
 * Automatically skips ingestion and Q&A checks when Milvus Lite or the Ollama backend is missing, marking those sections with ⚠️ entries instead of failing the suite.
 * Persists telemetry under `data/logs/` (`test_summary.json`, `test_history.json`, `dependency_history.json`, `telemetry_summary.json`) and prints a banner summarizing release/namespace/health if Rich is available.
 
-### 4.10 `verify signature` — Confirm artifact authenticity
+### 4.11 `verify signature` — Confirm artifact authenticity
 
 ```bash
 python3 -m yo.cli verify signature
@@ -214,7 +226,7 @@ python3 -m yo.cli verify signature --json
 * Prints the signer identity, release version, commit SHA, and health score on success; JSON mode emits the same payload for CI gates or scripted tooling.
 * Surfaces actionable guidance when signatures are missing or invalid—including reminders to run `yo cli verify` or fetch the latest signed artifacts.
 
-### 4.11 `verify clone` — Validate a fresh checkout
+### 4.12 `verify clone` — Validate a fresh checkout
 
 ```bash
 python3 -m yo.cli verify clone
@@ -225,7 +237,7 @@ python3 -m yo.cli verify clone --json
 * Reports the most recent ledger entry (version, commit SHA, timestamp) pulled from `data/logs/verification_ledger.jsonl`.
 * Provides remediation hints when hashes drift, including rerunning `yo deps repair`, discarding local modifications, or pulling updated artifacts.
 
-### 4.12 `verify ledger` — Inspect signed history
+### 4.13 `verify ledger` — Inspect signed history
 
 ```bash
 python3 -m yo.cli verify ledger
@@ -234,7 +246,7 @@ python3 -m yo.cli verify ledger
 * Prints up to ten of the latest verification ledger entries in reverse chronological order.
 * Each entry includes timestamp, release version, commit hash, health score, checksum manifest path, and signature file so audits and manual verification stay traceable.
 
-### 4.13 `verify manifest` — Validate release manifest
+### 4.14 `verify manifest` — Validate release manifest
 
 ```bash
 python3 -m yo.cli verify manifest
@@ -245,7 +257,7 @@ python3 -m yo.cli verify manifest --json
 * Useful after cloning or restoring an environment—`--json` feeds CI checks while the human-readable output highlights any missing files or signature mismatches.
 * Combine with `yo verify signature` to double-check checksum authenticity before ingesting artifacts into another environment.
 
-### 4.14 `package` — Build signed release bundles
+### 4.15 `package` — Build signed release bundles
 
 ```bash
 python3 -m yo.cli package release
@@ -257,7 +269,7 @@ python3 -m yo.cli package release --version v0.5.0 --signer "Codex CI (auto) <co
 * Pass `--output` to override the `releases/` directory or `--manifest` to store the manifest elsewhere; `--json` prints machine-readable metadata for CI pipelines.
 * After packaging you can distribute the tarball + `.sig` and share the manifest so downstream users can run `yo verify manifest` followed by a direct `gpg --verify`.
 
-### 4.15 `release` — Inspect packaged releases
+### 4.16 `release` — Inspect packaged releases
 
 ```bash
 python3 -m yo.cli release list
@@ -268,7 +280,7 @@ python3 -m yo.cli release info v0.5.0 --json
 * `info <version>` loads the stored manifest, showing the signer, bundle checksum, and signature paths for that specific build; `--json` emits machine-friendly metadata.
 * Combine with `yo package release` to validate packaging before pushing artifacts upstream.
 
-### 4.16 `report audit` — Generate compliance reports
+### 4.17 `report audit` — Generate compliance reports
 
 ```bash
 python3 -m yo.cli report audit
@@ -281,7 +293,7 @@ python3 -m yo.cli report audit --md --html
 * Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
 * CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
 
-### 4.17 `system` — Lifecycle tooling
+### 4.18 `system` — Lifecycle tooling
 
 ```bash
 python3 -m yo.cli system clean --dry-run
@@ -295,7 +307,7 @@ python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
 * `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
 * `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
 
-### 4.18 `help` — Discover commands and aliases
+### 4.19 `help` — Discover commands and aliases
 
 ```bash
 python3 -m yo.cli help
@@ -307,6 +319,17 @@ python3 -m yo.cli h     # alias for `yo health report`
 * `help` renders categorized command tables (Rich adds color automatically).
 * Subcommand help surfaces nested actions like `namespace stats` and `namespace drift`.
 * Aliases keep workflows fast; Rich-based color output is bundled via `requirements.txt`.
+
+### 4.20 `shell` — Interactive developer REPL
+
+```bash
+python3 -m yo.cli shell
+```
+
+* Launches a persistent prompt (`Yo>`) with history stored in `data/logs/shell_history.txt` so common commands are a few keystrokes away.
+* Supports built-in verbs such as `chat`, `verify`, `telemetry`, `deps check`, and `config set/get` without leaving the shell.
+* `chat --stream` inside the REPL mirrors the CLI flag—tokens print live and citations appear as soon as the model finishes.
+* Press `Ctrl+D` or type `exit` when you are done; the REPL never modifies your `.env` unless you explicitly run the config commands.
 
 ---
 

@@ -9,6 +9,8 @@ from typing import Awaitable, Callable, Iterable, List, Sequence, Set
 
 from fastapi import WebSocket
 
+from yo.events import publish_event
+
 try:  # pragma: no cover - watchfiles optional
     from watchfiles import awatch
 except ImportError:  # pragma: no cover
@@ -21,9 +23,10 @@ PayloadBuilder = Callable[[], dict | Awaitable[dict]]
 class UpdateBroadcaster:
     """Broadcast filesystem-driven updates to connected WebSocket clients."""
 
-    def __init__(self, watch_targets: Iterable[Path], builder: PayloadBuilder) -> None:
+    def __init__(self, watch_targets: Iterable[Path], builder: PayloadBuilder, *, event_type: str | None = None) -> None:
         self.watch_targets = [Path(target) for target in watch_targets]
         self._builder = builder
+        self._event_type = event_type
         self._connections: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
         self._watch_task: asyncio.Task | None = None
@@ -87,6 +90,8 @@ class UpdateBroadcaster:
         if not payload:
             return
         message = json.dumps(payload)
+        if self._event_type:
+            publish_event(self._event_type, payload)
         async with self._lock:
             connections: Sequence[WebSocket] = tuple(self._connections)
 
@@ -104,4 +109,3 @@ class UpdateBroadcaster:
         if asyncio.iscoroutine(result):
             result = await result
         return result or {}
-

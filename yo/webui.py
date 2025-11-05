@@ -22,6 +22,7 @@ from yo.backends import BackendStatus, detect_backends
 from yo.brain import IngestionError, MissingDependencyError, YoBrain
 from yo.chat import ChatSessionStore
 from yo.config import get_config, update_config_value
+from yo.events import get_event_bus, publish_event
 from yo.logging_utils import get_logger
 from yo.telemetry import (
     build_telemetry_summary,
@@ -72,12 +73,16 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
     web: bool = False
+    stream: bool = False
 
 
 class ConfigUpdateRequest(BaseModel):
     key: str
     value: str
     namespace: str | None = None
+
+
+event_bus = get_event_bus()
 
 
 def _format_backend(status: BackendStatus) -> dict[str, Any]:
@@ -399,6 +404,38 @@ async def websocket_updates(websocket: WebSocket) -> None:
         await broadcaster.disconnect(websocket)
 
 
+@app.websocket("/ws/events")
+async def websocket_events(websocket: WebSocket) -> None:
+    await websocket.accept()
+    queue = await event_bus.subscribe()
+    try:
+        while True:
+            event = await queue.get()
+            await websocket.send_text(json.dumps(event))
+    except WebSocketDisconnect:
+        await event_bus.unsubscribe(queue)
+    except Exception:  # pragma: no cover
+        await event_bus.unsubscribe(queue)
+
+
+@app.websocket("/ws/chat/{session_id}")
+async def websocket_chat_stream(session_id: str, websocket: WebSocket) -> None:
+    await websocket.accept()
+    queue = await event_bus.subscribe()
+    try:
+        while True:
+            event = await queue.get()
+            if event.get("session_id") != session_id:
+                continue
+            if event.get("type") not in {"chat_token", "chat_complete", "chat_message", "chat_started"}:
+                continue
+            await websocket.send_text(json.dumps(event))
+    except WebSocketDisconnect:
+        await event_bus.unsubscribe(queue)
+    except Exception:  # pragma: no cover
+        await event_bus.unsubscribe(queue)
+
+
 def build_config_payload() -> dict[str, Any]:
     cfg = get_config()
     overrides = {name: value.as_dict() for name, value in cfg.namespace_overrides.items()}
@@ -435,7 +472,16 @@ async def api_config_update(payload: ConfigUpdateRequest) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await broadcaster.trigger()
-    return JSONResponse(content={"status": "ok", "config": build_config_payload()})
+    config_snapshot = build_config_payload()
+    publish_event(
+        "config_updated",
+        {
+            "key": payload.key,
+            "namespace": payload.namespace,
+            "value": payload.value,
+        },
+    )
+    return JSONResponse(content={"status": "ok", "config": config_snapshot})
 
 
 @app.post("/api/chat", response_class=JSONResponse)
@@ -451,13 +497,22 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         raise HTTPException(status_code=503, detail=f"YoBrain unavailable: {exc}") from exc
 
     try:
-        session_id, reply, history, metadata = chat_store.send(
-            brain=brain,
-            namespace=namespace,
-            message=message,
-            session_id=payload.session_id,
-            web=payload.web,
-        )
+        if payload.stream:
+            session_id, reply, history, metadata = chat_store.stream(
+                brain=brain,
+                namespace=namespace,
+                message=message,
+                session_id=payload.session_id,
+                web=payload.web,
+            )
+        else:
+            session_id, reply, history, metadata = chat_store.send(
+                brain=brain,
+                namespace=namespace,
+                message=message,
+                session_id=payload.session_id,
+                web=payload.web,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -468,6 +523,7 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         "history": history,
         "context": metadata.get("context"),
         "citations": metadata.get("citations", []),
+        "stream": payload.stream,
     }
     return JSONResponse(content=response_payload)
 
@@ -480,6 +536,7 @@ broadcaster = UpdateBroadcaster(
         Path(".env"),
     ],
     build_status_payload,
+    event_type="status_update",
 )
 
 
@@ -935,6 +992,15 @@ async def api_ingest(request: Request) -> JSONResponse:
         ingest_summary.get("documents_ingested", 0),
         ingest_summary.get("chunks_ingested", 0),
         duration,
+    )
+    publish_event(
+        "ingest_complete",
+        {
+            "namespace": namespace,
+            "documents": ingest_summary.get("documents_ingested", 0),
+            "chunks": ingest_summary.get("chunks_ingested", 0),
+            "duration": duration,
+        },
     )
     return _build_success_response(
         namespace=namespace,

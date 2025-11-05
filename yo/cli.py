@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import shutil
+import time
 from datetime import datetime, timedelta
 from statistics import mean
 from importlib import metadata as importlib_metadata
@@ -127,6 +128,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "add": "Ingestion",
     "ask": "Retrieval",
     "chat": "Retrieval",
+    "shell": "Utilities",
     "summarize": "Retrieval",
     "namespace": "Namespace",
     "ns": "Namespace",
@@ -1317,6 +1319,34 @@ def _handle_dashboard_cli(args: argparse.Namespace, __: YoBrain | None = None) -
             signature_display = str(signature_path) if signature_path.exists() else ledger_entry.get("signature", "n/a")
             print(f"   • Signature: {signature_display}")
 
+    def _tail_events() -> None:
+        event_log = Path("data/logs/events.jsonl")
+        event_log.parent.mkdir(parents=True, exist_ok=True)
+        event_log.touch(exist_ok=True)
+        print("\n📨 Live events — press Ctrl+C to exit.")
+        with event_log.open("r", encoding="utf-8") as fh:
+            fh.seek(0, os.SEEK_END)
+            try:
+                while True:
+                    line = fh.readline()
+                    if not line:
+                        time.sleep(0.5)
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    timestamp = event.get("timestamp") or event.get("time") or "now"
+                    event_type = event.get("type", "event")
+                    print(f"   [{timestamp}] {event_type}: {json.dumps(event)}")
+            except KeyboardInterrupt:
+                print("\n👋 Exiting event stream.")
+
+    if getattr(args, "events", False):
+        _tail_events()
+        if not getattr(args, "live", False):
+            return
+
     if getattr(args, "live", False):
         try:
             from watchfiles import watch  # type: ignore
@@ -1348,6 +1378,12 @@ def _handle_system_clean(args: argparse.Namespace, __: YoBrain | None = None) ->
         return
     for path in removed:
         print(f"   • {path}")
+
+
+def _handle_shell(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    from yo import shell as yo_shell
+
+    yo_shell.run_shell()
 
 
 def _handle_system_snapshot(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1495,20 +1531,47 @@ def _handle_chat(args: argparse.Namespace, brain: YoBrain | None = None) -> None
     history: list[dict[str, str]] = []
 
     def _send(message: str) -> None:
-        payload = brain.chat(
-            message=message,
-            namespace=namespace,
-            history=history,
-            web=getattr(args, "web", False),
-        )
-        reply = payload.get("response", "")
-        citations = payload.get("citations") or []
-        history.append({"user": message, "assistant": reply})
-        print(f"\n🧠 Yo ({namespace}):\n{reply}\n")
-        if citations:
-            print("🔗 Sources:")
-            for citation in citations[:5]:
-                print(f"   • {citation}")
+        if getattr(args, "stream", False):
+            print(f"\n🧠 Yo ({namespace}):\n", end="")
+            sys.stdout.flush()
+            assembled = []
+            citations: list[str] = []
+            for chunk in brain.chat_stream(
+                message=message,
+                namespace=namespace,
+                history=history,
+                web=getattr(args, "web", False),
+            ):
+                if chunk.get("done"):
+                    reply = chunk.get("response", "")
+                    citations = chunk.get("citations") or []
+                    history.append({"user": message, "assistant": reply})
+                    if not reply.endswith("\n"):
+                        print()
+                    if citations:
+                        print("🔗 Sources:")
+                        for citation in citations[:5]:
+                            print(f"   • {citation}")
+                    break
+                token = chunk.get("token", "")
+                if token:
+                    assembled.append(token)
+                    print(token, end="", flush=True)
+        else:
+            payload = brain.chat(
+                message=message,
+                namespace=namespace,
+                history=history,
+                web=getattr(args, "web", False),
+            )
+            reply = payload.get("response", "")
+            citations = payload.get("citations") or []
+            history.append({"user": message, "assistant": reply})
+            print(f"\n🧠 Yo ({namespace}):\n{reply}\n")
+            if citations:
+                print("🔗 Sources:")
+                for citation in citations[:5]:
+                    print(f"   • {citation}")
 
     if getattr(args, "message", None):
         message_text = " ".join(args.message).strip()
@@ -1905,6 +1968,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("message", nargs="*", help="Message to send immediately")
     chat_parser.add_argument("--ns", help="Namespace to target (default: active namespace)")
     chat_parser.add_argument("--web", action="store_true", help="Blend cached web context into replies")
+    chat_parser.add_argument("--stream", action="store_true", help="Stream tokens as they generate")
     chat_parser.set_defaults(handler=_handle_chat)
 
     summarize_parser = _add_top_level("summarize", help_text="Summarize a namespace", category="Retrieval")
@@ -2054,6 +2118,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dashboard_parser = _add_top_level("dashboard", help_text="Show the developer dashboard", category="Insights")
     dashboard_parser.add_argument("--live", action="store_true", help="Stream dashboard updates in real time")
+    dashboard_parser.add_argument("--events", action="store_true", help="Tail live event telemetry")
     dashboard_parser.set_defaults(handler=_handle_dashboard_cli)
 
     cache_parser = _add_top_level("cache", help_text="Web cache utilities", category="Utilities")
@@ -2067,6 +2132,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     compact_parser = _add_top_level("compact", help_text="Vacuum the Milvus Lite store", category="Maintenance")
     compact_parser.set_defaults(handler=_handle_compact)
+
+    shell_parser = _add_top_level("shell", help_text="Open the Yo developer shell", category="Utilities")
+    shell_parser.set_defaults(handler=_handle_shell)
 
     package_parser = _add_top_level("package", help_text="Release packaging utilities", category="Release")
     package_sub = package_parser.add_subparsers(dest="package_command", required=True)

@@ -124,8 +124,10 @@ scripts/setup_yo_dev.sh
 ## 💬 Conversational CLI & UI
 
 - `yo chat [message] [--ns research]` opens a multi-turn REPL that preserves history, surfaces citations, and mirrors the new `/chat` web workspace.
+- `yo chat --stream "Explain RAG"` prints tokens as soon as the model generates them; the web UI receives the same token events over `/ws/chat/<session>`.
+- `yo shell` launches an always-on developer console with history, auto-completion (when available), and shortcuts for `verify`, `telemetry analyze`, `deps check`, and more.
 - `/chat` in the Lite UI keeps a persistent message list, streams responses as they arrive, and remembers the current session via local storage.
-- Real-time dashboards now run over `/ws/updates`; `/dashboard` in the CLI supports `--live` streaming so terminal users see the same telemetry pulses as the browser.
+- Real-time dashboards now run over `/ws/updates`; `/dashboard --live` brings those pulses to the terminal, and `/dashboard --events` tails the new event log in `data/logs/events.jsonl`.
 
 ## ⚙️ Testing
 ```bash

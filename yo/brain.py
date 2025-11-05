@@ -1101,6 +1101,39 @@ class YoBrain:
         response = self.client.generate(model=self.model_name, prompt=prompt)
         return response["response"]
 
+    def _prepare_chat(
+        self,
+        message: str,
+        namespace: str,
+        history: list[dict[str, str]] | None,
+        web: bool,
+    ) -> tuple[list[dict[str, str]], str, list[str]]:
+        coll_name = self._collection_name(namespace)
+        memory_context, citations = self._search_memory(coll_name, message)
+
+        system_prompt = (
+            "You are Yo, a concise local research assistant. "
+            "Use the provided context and prior conversation to answer. "
+            "If the context does not contain the answer, acknowledge the gap honestly."
+        )
+        if memory_context:
+            system_prompt += f"\n\nContext:\n{memory_context}"
+        if web:
+            system_prompt += "\n\nWeb augmentation may have been applied; cite sources when possible."
+
+        conversation: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        if history:
+            for turn in history[-10:]:
+                user_msg = turn.get("user")
+                assistant_msg = turn.get("assistant")
+                if user_msg:
+                    conversation.append({"role": "user", "content": str(user_msg)})
+                if assistant_msg:
+                    conversation.append({"role": "assistant", "content": str(assistant_msg)})
+
+        conversation.append({"role": "user", "content": message})
+        return conversation, memory_context, citations
+
     def chat(
         self,
         *,
@@ -1115,28 +1148,7 @@ class YoBrain:
             raise ValueError("Message cannot be empty.")
 
         namespace = namespace or self.active_namespace
-        coll_name = self._collection_name(namespace)
-        memory_context, citations = self._search_memory(coll_name, message)
-
-        system_prompt = (
-            "You are Yo, a concise local research assistant. "
-            "Use the provided context and prior conversation to answer. "
-            "If the context does not contain the answer, acknowledge the gap honestly."
-        )
-        if memory_context:
-            system_prompt += f"\n\nContext:\n{memory_context}"
-
-        conversation: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-        if history:
-            for turn in history[-10:]:
-                user_msg = turn.get("user")
-                assistant_msg = turn.get("assistant")
-                if user_msg:
-                    conversation.append({"role": "user", "content": str(user_msg)})
-                if assistant_msg:
-                    conversation.append({"role": "assistant", "content": str(assistant_msg)})
-
-        conversation.append({"role": "user", "content": message})
+        conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
 
         response = self.client.chat(model=self.model_name, messages=conversation)
         reply = ""
@@ -1153,3 +1165,41 @@ class YoBrain:
             "citations": citations,
         }
         return payload
+
+    def chat_stream(
+        self,
+        *,
+        message: str,
+        namespace: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        web: bool = False,
+    ):
+        """Yield chat tokens followed by a completion payload."""
+
+        if not message:
+            raise ValueError("Message cannot be empty.")
+
+        namespace = namespace or self.active_namespace
+        conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
+
+        collected: list[str] = []
+        stream = self.client.chat(model=self.model_name, messages=conversation, stream=True)
+        for chunk in stream:
+            token = ""
+            if isinstance(chunk, dict):
+                message_block = chunk.get("message")
+                if isinstance(message_block, dict):
+                    token = message_block.get("content") or ""
+                token = token or chunk.get("response", "")
+            if token:
+                collected.append(token)
+                yield {"token": token, "done": False}
+
+        reply = "".join(collected).strip()
+        yield {
+            "token": "",
+            "done": True,
+            "response": reply,
+            "context": memory_context,
+            "citations": citations,
+        }

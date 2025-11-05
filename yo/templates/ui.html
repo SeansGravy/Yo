@@ -80,6 +80,18 @@
         font-size: 0.85rem;
         color: #555;
       }
+      #event-feed {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        max-height: 180px;
+        overflow-y: auto;
+      }
+      #event-feed li {
+        padding: 0.4rem 0;
+        border-bottom: 1px solid #e2e8f0;
+        font-size: 0.95rem;
+      }
       .actions {
         display: flex;
         gap: 0.5rem;
@@ -208,6 +220,10 @@
       <p id="release-caption" class="notice small"></p>
     </section>
     <section>
+      <h2>Live Events</h2>
+      <ul id="event-feed"></ul>
+    </section>
+    <section>
       <h2>Namespaces</h2>
       <table id="namespace-table">
         <thead>
@@ -248,8 +264,11 @@
     <script>
       const statusUrl = '/api/status';
       const ingestUrl = '/api/ingest';
+      const eventsUrl = '/ws/events';
       let refreshTimer = null;
       let updateSocket = null;
+      let eventsSocket = null;
+      const eventBuffer = [];
 
       function startFallback() {
         if (!refreshTimer) {
@@ -584,8 +603,51 @@
         };
       }
 
+      function connectEvents() {
+        if (eventsSocket && eventsSocket.readyState <= 1) {
+          return;
+        }
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        eventsSocket = new WebSocket(`${protocol}${window.location.host}${eventsUrl}`);
+        eventsSocket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            eventBuffer.unshift(payload);
+            if (eventBuffer.length > 20) {
+              eventBuffer.pop();
+            }
+            renderEvents();
+          } catch (error) {
+            console.warn('Unable to parse event payload', error);
+          }
+        };
+        eventsSocket.onclose = () => {
+          setTimeout(connectEvents, 5000);
+        };
+      }
+
+      function renderEvents() {
+        const list = document.getElementById('event-feed');
+        if (!list) return;
+        list.innerHTML = '';
+        if (!eventBuffer.length) {
+          const item = document.createElement('li');
+          item.textContent = 'No events observed yet.';
+          list.appendChild(item);
+          return;
+        }
+        eventBuffer.slice(0, 10).forEach((event) => {
+          const item = document.createElement('li');
+          const ts = event.timestamp || event.time || 'now';
+          const type = event.type || 'event';
+          item.textContent = `[${ts}] ${type}`;
+          list.appendChild(item);
+        });
+      }
+
       refreshStatus();
       connectUpdates();
+      connectEvents();
       startFallback();
     </script>
   </body>

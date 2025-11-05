@@ -169,6 +169,8 @@
       const sessionKey = 'yo_chat_session';
       const historyKey = 'yo_chat_history';
       let sessionId = localStorage.getItem(sessionKey) || null;
+      let chatSocket = null;
+      let pendingAssistantEl = null;
 
       const messagesEl = document.getElementById('messages');
       const namespaceInput = document.getElementById('namespace-input');
@@ -176,37 +178,20 @@
       const statusEl = document.getElementById('status');
       const sendButton = document.getElementById('send-button');
 
-      function renderHistory(history, animateLast = false) {
-        messagesEl.innerHTML = '';
-        history.forEach((turn, index) => {
-          const userBlock = document.createElement('div');
-          userBlock.className = 'message user';
-          userBlock.innerHTML = `<strong>You</strong>${turn.user}`;
-          messagesEl.appendChild(userBlock);
-
-          const assistantBlock = document.createElement('div');
-          assistantBlock.className = 'message assistant';
-          assistantBlock.innerHTML = `<strong>Yo</strong><span class="assistant-text">${turn.assistant}</span>`;
-          messagesEl.appendChild(assistantBlock);
-
-          if (animateLast && index === history.length - 1) {
-            typewriterEffect(assistantBlock.querySelector('.assistant-text'), turn.assistant);
-          }
-        });
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+      function generateSessionId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+          return window.crypto.randomUUID();
+        }
+        return `session-${Date.now()}`;
       }
 
-      function typewriterEffect(element, text) {
-        if (!element) return;
-        element.textContent = '';
-        let index = 0;
-        const interval = setInterval(() => {
-          element.textContent += text.charAt(index);
-          index += 1;
-          if (index >= text.length) {
-            clearInterval(interval);
-          }
-        }, 20);
+      function renderHistory(history) {
+        messagesEl.innerHTML = '';
+        history.forEach((turn) => {
+          appendUserBubble(turn.user);
+          appendAssistantBubble(turn.assistant);
+        });
+        messagesEl.scrollTop = messagesEl.scrollHeight;
       }
 
       function loadStoredHistory() {
@@ -227,12 +212,97 @@
         localStorage.setItem(historyKey, JSON.stringify({ session_id: sessionId, history }));
       }
 
+      function appendUserBubble(text) {
+        const block = document.createElement('div');
+        block.className = 'message user';
+        block.innerHTML = `<strong>You</strong>${text}`;
+        messagesEl.appendChild(block);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function appendAssistantBubble(text) {
+        const block = document.createElement('div');
+        block.className = 'message assistant';
+        const span = document.createElement('span');
+        span.className = 'assistant-text';
+        span.textContent = text;
+        block.innerHTML = '<strong>Yo</strong>';
+        block.appendChild(span);
+        messagesEl.appendChild(block);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        return span;
+      }
+
+      function connectChatStream() {
+        if (!sessionId) {
+          return;
+        }
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const wsUrl = `${protocol}${window.location.host}/ws/chat/${sessionId}`;
+        if (chatSocket && chatSocket.url === wsUrl && chatSocket.readyState <= 1) {
+          return;
+        }
+        if (chatSocket) {
+          try { chatSocket.close(); } catch (error) { /* noop */ }
+        }
+        chatSocket = new WebSocket(wsUrl);
+        chatSocket.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            handleChatEvent(data);
+          } catch (error) {
+            console.warn('Malformed chat event', error);
+          }
+        };
+        chatSocket.onerror = () => {
+          statusEl.textContent = '⚠️ Chat stream disconnected.';
+        };
+      }
+
+      function handleChatEvent(event) {
+        if (!sessionId || event.session_id !== sessionId) {
+          return;
+        }
+        switch (event.type) {
+          case 'chat_token':
+            if (!pendingAssistantEl) {
+              pendingAssistantEl = appendAssistantBubble('');
+            }
+            pendingAssistantEl.textContent += event.token;
+            break;
+          case 'chat_complete':
+            pendingAssistantEl = null;
+            const history = event.history || [];
+            storeHistory(history);
+            renderHistory(history);
+            statusEl.textContent = '';
+            break;
+          case 'chat_message':
+            // non-streaming completion
+            if (event.history) {
+              storeHistory(event.history);
+              renderHistory(event.history);
+            }
+            break;
+          default:
+            break;
+        }
+      }
+
       async function sendMessage(content) {
         const namespace = namespaceInput.value.trim() || 'default';
         statusEl.textContent = 'Thinking…';
         sendButton.disabled = true;
         messageInput.disabled = true;
         try {
+          if (!sessionId) {
+            sessionId = generateSessionId();
+            localStorage.setItem(sessionKey, sessionId);
+          }
+          connectChatStream();
+          appendUserBubble(content);
+          pendingAssistantEl = appendAssistantBubble('');
+
           const response = await fetch(chatUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -240,6 +310,7 @@
               namespace,
               message: content,
               session_id: sessionId,
+              stream: true,
             }),
           });
           if (!response.ok) {
@@ -249,9 +320,12 @@
           const payload = await response.json();
           sessionId = payload.session_id;
           localStorage.setItem(sessionKey, sessionId);
-          const history = payload.history || [];
-          storeHistory(history);
-          renderHistory(history, true);
+          if (!payload.stream) {
+            storeHistory(payload.history || []);
+            renderHistory(payload.history || []);
+          } else {
+            storeHistory(payload.history || []);
+          }
           statusEl.textContent = '';
         } catch (error) {
           statusEl.textContent = `❌ ${error}`;
@@ -268,22 +342,25 @@
         if (!message) {
           return;
         }
-        const currentHistory = loadStoredHistory();
-        currentHistory.push({ user: message, assistant: '…' });
-        renderHistory(currentHistory);
         messageInput.value = '';
         sendMessage(message);
       });
 
       document.getElementById('new-session').addEventListener('click', () => {
-        sessionId = null;
-        localStorage.removeItem(sessionKey);
+        sessionId = generateSessionId();
+        localStorage.setItem(sessionKey, sessionId);
         localStorage.removeItem(historyKey);
         messagesEl.innerHTML = '';
         statusEl.textContent = 'Started a new session.';
+        connectChatStream();
       });
 
       window.addEventListener('load', () => {
+        if (!sessionId) {
+          sessionId = generateSessionId();
+          localStorage.setItem(sessionKey, sessionId);
+        }
+        connectChatStream();
         const history = loadStoredHistory();
         if (history.length) {
           renderHistory(history);
