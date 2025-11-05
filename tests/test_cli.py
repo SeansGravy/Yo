@@ -294,6 +294,48 @@ def test_handle_verify_clone_matches_remote(tmp_path: Path, monkeypatch: pytest.
     output = capsys.readouterr().out
     assert "Signature valid" in output
     assert "matches origin" in output
+
+
+def test_handle_package_release_prints_paths(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_build_release_bundle(**kwargs: object) -> dict[str, object]:
+        captured_kwargs.update(kwargs)
+        return {
+            "bundle": "releases/release_v0.5.0.tar.gz",
+            "signature": "releases/release_v0.5.0.tar.gz.sig",
+            "manifest": "data/logs/integrity_manifest.json",
+            "manifest_data": {
+                "version": "v0.5.0",
+                "commit": "abc1234",
+                "health": 95.2,
+            },
+        }
+
+    monkeypatch.setattr(cli, "build_release_bundle", fake_build_release_bundle)
+
+    cli._handle_package_release(
+        argparse.Namespace(version=None, signer=None, output=None, manifest=None, json=False),
+        None,
+    )
+
+    output = capsys.readouterr().out
+    assert "release_v0.5.0.tar.gz" in output
+    assert captured_kwargs.get("version") is None
+
+
+def test_handle_verify_manifest_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(
+        cli,
+        "verify_integrity_manifest",
+        lambda path: {"success": True, "manifest": {"version": "v0.5.0"}},
+    )
+
+    cli._handle_verify_manifest(argparse.Namespace(path=None, json=True), None)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["success"] is True
+    assert payload["manifest"]["version"] == "v0.5.0"
 def test_telemetry_analyze_release(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(
         cli,

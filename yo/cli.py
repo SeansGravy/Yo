@@ -9,7 +9,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import shutil
 from datetime import datetime, timedelta
 from statistics import mean
@@ -45,6 +44,12 @@ from yo.telemetry import (
     load_test_summary,
     summarize_failures,
 )
+from yo.release import (
+    build_release_bundle,
+    load_integrity_manifest,
+    verify_integrity_manifest,
+)
+from yo.signing import verify_signature
 from yo.system_tools import (
     load_lifecycle_history,
     list_snapshots,
@@ -129,6 +134,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "dashboard": "Insights",
     "cache": "Utilities",
     "compact": "Maintenance",
+    "package": "Release",
     "verify": "Validation",
     "doctor": "Validation",
     "health": "Insights",
@@ -188,68 +194,14 @@ def _expand_aliases(argv: Sequence[str]) -> list[str]:
     return [argv[0], *expansion, *argv[2:]]
 
 
-def _parse_gpg_signer(output: str) -> str | None:
-    match = re.search(r"Good signature from \"([^\"]+)\"", output)
-    if match:
-        return match.group(1)
-    return None
-
-
 def _verify_signature_artifacts() -> dict[str, Any]:
     checksum_path = Path("data/logs/checksums/artifact_hashes.txt")
     signature_path = Path("data/logs/checksums/artifact_hashes.sig")
     key_path = Path("data/logs/checksums/artifact_signing_public.asc")
-    result: dict[str, Any] = {
-        "success": False,
-        "message": "",
-        "signer": None,
-        "checksum": str(checksum_path),
-        "signature": str(signature_path),
-    }
-
-    if not checksum_path.exists() or not signature_path.exists():
-        result["message"] = "Required checksum or signature file is missing."
-        return result
-
-    if shutil.which("gpg") is None:
-        result["message"] = "gpg executable not found. Install GnuPG to verify signatures."
-        return result
-
-    env = os.environ.copy()
-    with tempfile.TemporaryDirectory() as gnupg_home:
-        env["GNUPGHOME"] = gnupg_home
-        # Suppress trust warnings
-        env.setdefault("GPG_TTY", "")
-
-        if key_path.exists():
-            import_proc = subprocess.run(
-                ["gpg", "--batch", "--yes", "--import", str(key_path)],
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-            if import_proc.returncode != 0:
-                result["message"] = import_proc.stderr or import_proc.stdout or "Failed to import signing key."
-                return result
-
-        verify_proc = subprocess.run(
-            ["gpg", "--batch", "--verify", str(signature_path), str(checksum_path)],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-
-        output = "".join(filter(None, [verify_proc.stdout, verify_proc.stderr]))
-        signer = _parse_gpg_signer(output)
-        result.update(
-            {
-                "success": verify_proc.returncode == 0,
-                "signer": signer,
-                "message": output.strip(),
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-        )
-        return result
+    result = verify_signature(signature_path, checksum_path, key_path=key_path)
+    result["checksum"] = str(checksum_path)
+    result["signature"] = str(signature_path)
+    return result
 
 
 def _format_timestamp(raw: Optional[str]) -> str:
@@ -1482,6 +1434,63 @@ def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> N
         print(f"   Signature: {signature}")
 
 
+def _handle_package_release(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    manifest_path = Path(args.manifest) if getattr(args, "manifest", None) else Path("data/logs/integrity_manifest.json")
+    release_dir = Path(args.output) if getattr(args, "output", None) else Path("releases")
+
+    try:
+        result = build_release_bundle(
+            version=getattr(args, "version", None),
+            signer=getattr(args, "signer", None),
+            release_dir=release_dir,
+            manifest_path=manifest_path,
+        )
+    except Exception as exc:
+        print(f"❌ {exc}")
+        raise SystemExit(1) from exc
+
+    manifest = result.get("manifest_data", {})
+    payload = {
+        "bundle": result.get("bundle"),
+        "signature": result.get("signature"),
+        "manifest": result.get("manifest"),
+        "version": manifest.get("version"),
+        "commit": manifest.get("commit"),
+        "health": manifest.get("health"),
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    print(f"📦 Release bundle created: {payload['bundle']}")
+    print(f"🔐 Signature: {payload['signature']}")
+    print(f"📝 Manifest: {payload['manifest']}")
+    if payload.get("version"):
+        print(f"Version: {payload['version']} @ {payload.get('commit', 'unknown')} (health {payload.get('health', 'n/a')})")
+
+
+def _handle_verify_manifest(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    manifest_path = Path(getattr(args, "path", None) or "data/logs/integrity_manifest.json")
+    result = verify_integrity_manifest(manifest_path)
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2))
+        return
+
+    manifest = result.get("manifest") or {}
+    version = manifest.get("version", "unknown")
+    if result.get("success"):
+        print(f"✅ Manifest valid for {version}")
+        bundle = manifest.get("release_bundle")
+        if bundle:
+            print(f"Bundle: {bundle}")
+    else:
+        print("❌ Manifest verification failed.")
+        for error in result.get("errors", []):
+            print(f"- {error}")
+
+
 def _handle_report_audit(args: argparse.Namespace, brain: YoBrain | None = None) -> None:
     if brain is None:
         brain = YoBrain()
@@ -1904,6 +1913,23 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parser = _add_top_level("compact", help_text="Vacuum the Milvus Lite store", category="Maintenance")
     compact_parser.set_defaults(handler=_handle_compact)
 
+    package_parser = _add_top_level("package", help_text="Release packaging utilities", category="Release")
+    package_sub = package_parser.add_subparsers(dest="package_command", required=True)
+    package_release_parser = package_sub.add_parser(
+        "release",
+        help="Create a signed release bundle",
+        description="Create a signed release bundle with checksums and manifest",
+    )
+    package_release_parser.add_argument("--version", help="Override detected version tag")
+    package_release_parser.add_argument("--signer", help="GPG key identity to use for signing")
+    package_release_parser.add_argument("--output", help="Directory to store the release bundle (default: releases/)")
+    package_release_parser.add_argument(
+        "--manifest",
+        help="Path for the integrity manifest (default: data/logs/integrity_manifest.json)",
+    )
+    package_release_parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    package_release_parser.set_defaults(handler=_handle_package_release)
+
     verify_parser = _add_top_level("verify", help_text="Run the regression test suite", category="Validation")
     verify_parser.set_defaults(handler=run_test, verify_command=None)
     verify_sub = verify_parser.add_subparsers(dest="verify_command")
@@ -1919,6 +1945,15 @@ def build_parser() -> argparse.ArgumentParser:
     verify_clone_parser = verify_sub.add_parser("clone", help="Validate signature and remote checksum against origin/main", description="Verify signature and compare checksums with origin")
     verify_clone_parser.add_argument("--json", action="store_true", help="Output result as JSON")
     verify_clone_parser.set_defaults(handler=_handle_verify_clone)
+
+    verify_manifest_parser = verify_sub.add_parser(
+        "manifest",
+        help="Validate integrity manifest and release bundle",
+        description="Validate integrity manifest and release bundle",
+    )
+    verify_manifest_parser.add_argument("--path", help="Path to integrity_manifest.json")
+    verify_manifest_parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    verify_manifest_parser.set_defaults(handler=_handle_verify_manifest)
 
     doctor_parser = _add_top_level("doctor", help_text="Diagnose common local setup issues", category="Validation")
     doctor_parser.set_defaults(handler=run_doctor)
@@ -1950,6 +1985,7 @@ def main() -> None:
         "dashboard",
         "health",
         "system",
+        "package",
         "help",
     }:
         ns_override = getattr(args, "ns", None)

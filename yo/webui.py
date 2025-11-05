@@ -28,6 +28,11 @@ from yo.telemetry import (
     load_test_summary,
     load_telemetry_summary,
 )
+from yo.release import (
+    DEFAULT_MANIFEST_PATH,
+    load_integrity_manifest,
+    verify_integrity_manifest,
+)
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -253,6 +258,19 @@ def api_status() -> JSONResponse:
         except json.JSONDecodeError:
             verification_info = {}
 
+    manifest_data = load_integrity_manifest()
+    release_info: dict[str, Any] = {}
+    if manifest_data:
+        release_info = {
+            "version": manifest_data.get("version"),
+            "bundle": manifest_data.get("release_bundle"),
+            "bundle_signature": manifest_data.get("bundle_signature"),
+            "bundle_checksum": manifest_data.get("bundle_checksum"),
+            "manifest": str(DEFAULT_MANIFEST_PATH),
+            "timestamp": manifest_data.get("timestamp"),
+            "health": manifest_data.get("health"),
+        }
+
     ingestion_enabled = (
         brain_available
         and backends.milvus.available
@@ -289,9 +307,31 @@ def api_status() -> JSONResponse:
         "drift_window": DRIFT_WINDOW_LABEL,
         "timestamp": datetime.utcnow().isoformat(),
         "verification": verification_info,
+        "release": release_info,
     }
 
     return JSONResponse(content=payload)
+
+
+@app.get("/api/release/latest", response_class=JSONResponse)
+def api_release_latest() -> JSONResponse:
+    """Return integrity manifest verification for the latest release."""
+
+    result = verify_integrity_manifest(DEFAULT_MANIFEST_PATH)
+    if not result.get("manifest"):
+        raise HTTPException(status_code=404, detail="Integrity manifest not found.")
+    return JSONResponse(content=result)
+
+
+@app.get("/api/release/{version}", response_class=JSONResponse)
+def api_release_version(version: str) -> JSONResponse:
+    """Return release metadata for a requested version."""
+
+    result = verify_integrity_manifest(DEFAULT_MANIFEST_PATH)
+    manifest = result.get("manifest") or {}
+    if manifest.get("version") != version:
+        raise HTTPException(status_code=404, detail=f"No release data for version {version}.")
+    return JSONResponse(content=result)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -301,6 +341,7 @@ def dashboard(_: Request) -> HTMLResponse:
     dependencies = load_dependency_history(limit=5)
     trend = compute_trend(history, days=7)
     telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
+    manifest_data = load_integrity_manifest()
     ledger_entry: dict[str, Any] | None = None
     signature_path = Path("data/logs/checksums/artifact_hashes.sig")
     ledger_path = Path("data/logs/verification_ledger.jsonl")
@@ -420,6 +461,27 @@ def dashboard(_: Request) -> HTMLResponse:
         </section>
         """
 
+    if manifest_data:
+        release_block = f"""
+        <section>
+          <h2>Release Bundle</h2>
+          <ul>
+            <li>Version: {manifest_data.get('version', 'unknown')}</li>
+            <li>Bundle: {manifest_data.get('release_bundle', 'n/a')}</li>
+            <li>Signature: {manifest_data.get('bundle_signature', 'n/a')}</li>
+            <li>Checksum: {manifest_data.get('bundle_checksum', 'n/a')}</li>
+            <li>Manifest: {DEFAULT_MANIFEST_PATH}</li>
+          </ul>
+        </section>
+        """
+    else:
+        release_block = """
+        <section>
+          <h2>Release Bundle</h2>
+          <p>No release bundle packaged yet. Run <code>yo package release</code> after verification.</p>
+        </section>
+        """
+
     html = f"""
     <html>
       <head>
@@ -440,6 +502,7 @@ def dashboard(_: Request) -> HTMLResponse:
         </section>
         {health_section}
         {verification_block}
+        {release_block}
         <section>
           <h2>Recent Trend (last {len(trend)} runs)</h2>
           <table>

@@ -192,6 +192,10 @@
       <div id="verification-summary">No signed verification recorded yet.</div>
     </section>
     <section>
+      <h2>Release Bundle</h2>
+      <div id="release-summary">No release bundle packaged yet.</div>
+    </section>
+    <section>
       <h2>Namespaces</h2>
       <table id="namespace-table">
         <thead>
@@ -338,6 +342,30 @@
         `;
       }
 
+      function renderRelease(release) {
+        const container = document.getElementById('release-summary');
+        if (!container) {
+          return;
+        }
+        if (!release || Object.keys(release).length === 0) {
+          container.textContent = 'No release bundle packaged yet.';
+          return;
+        }
+        const version = release.version || 'unknown';
+        const bundle = release.bundle || 'n/a';
+        const signature = release.bundle_signature || 'n/a';
+        const checksum = release.bundle_checksum || 'n/a';
+        const timestamp = release.timestamp ? new Date(release.timestamp).toLocaleString() : '—';
+        container.innerHTML = `
+          <p><strong>Status:</strong> ${release.health && Number(release.health) >= 0 ? '🟢 Verified' : '🟡 Pending'}</p>
+          <p><strong>Version:</strong> ${version}</p>
+          <p><strong>Bundle:</strong> ${bundle}</p>
+          <p><strong>Signature:</strong> ${signature}</p>
+          <p><strong>Checksum:</strong> ${checksum}</p>
+          <p><strong>Updated:</strong> ${timestamp}</p>
+        `;
+      }
+
       function renderNamespaces(namespaces, driftWindow) {
         const tbody = document.querySelector('#namespace-table tbody');
         tbody.innerHTML = '';
@@ -424,6 +452,7 @@
           renderBackends(data.backends);
           renderHealth(data.health);
           renderVerification(data.verification);
+          renderRelease(data.release);
           renderNamespaces(data.namespaces, data.drift_window);
           updateIngestionState(data.ingestion);
           updateWarningBanner(data.warning);

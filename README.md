@@ -101,6 +101,17 @@ scripts/setup_yo_dev.sh
 - `yo verify ledger` prints the most recent signed verification entries from `data/logs/verification_ledger.jsonl`, including timestamp, commit SHA, and checksum path.
 - The dashboard surfaces these trust signals via a green “Verified” badge, signer details, and signature timestamp in the Integrity panel, providing at-a-glance assurance that the build is authentic.
 
+## 📦 Release Packaging & Integrity Manifest
+
+- `yo package release [--version v0.5.0] [--signer "Codex CI (auto) <codex-ci@local>"]` gathers signed checksums, telemetry, audits, and the verification ledger into a compressed bundle under `releases/`, then signs the archive and writes `data/logs/integrity_manifest.json`.
+- `yo verify manifest [--json]` validates the integrity manifest, confirms signature authenticity for the checksum file and release bundle, and checks bundle hashes against the recorded value—perfect for post-clone assurance or CI gating.
+- The manifest powers new REST endpoints (`/api/release/latest` and `/api/release/<version>`) and the dashboard’s trust badge so anyone can download and verify the latest release directly from Yo.
+- Docs now include a quick-start snippet for manual GPG verification:
+  ```bash
+  python3 -m yo.cli verify manifest
+  gpg --verify releases/release_v0.5.0.tar.gz.sig releases/release_v0.5.0.tar.gz
+  ```
+
 ## 🧭 Dynamic Help, Aliases, & Color
 
 - `yo help` shows a categorized command directory. `yo help <command>` drills into subcommands with rich tables.

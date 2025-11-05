@@ -262,6 +262,21 @@ EOF
             echo "✅ $f present ($size bytes)"
           done
 
+      - name: Package release bundle
+        if: ${{ success() }}
+        run: |
+          python3 -m yo.cli package release --signer "Codex CI (auto) <codex-ci@local>"
+
+      - name: Verify release bundle outputs
+        if: ${{ success() }}
+        run: |
+          if [ ! -f data/logs/integrity_manifest.json ]; then
+            echo "❌ Integrity manifest missing after packaging."
+            exit 1
+          fi
+          ls releases/release_*.tar.gz >/dev/null 2>&1 || { echo "❌ Release bundle missing."; exit 1; }
+          ls releases/release_*.tar.gz.sig >/dev/null 2>&1 || { echo "❌ Release bundle signature missing."; exit 1; }
+
       - name: Verify signature on clone
         if: ${{ success() }}
         run: python3 -m yo.cli verify signature --json
@@ -284,6 +299,9 @@ EOF
             data/logs/checksums/artifact_hashes.sig
             data/logs/checksums/artifact_signing_public.asc
             data/logs/verification_ledger.jsonl
+            data/logs/integrity_manifest.json
+            releases/release_*.tar.gz
+            releases/release_*.tar.gz.sig
             data/logs/push_instructions.txt
             yo_test_results_*.log
             docs/CHANGELOG.md

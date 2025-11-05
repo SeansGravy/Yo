@@ -234,7 +234,30 @@ python3 -m yo.cli verify ledger
 * Prints up to ten of the latest verification ledger entries in reverse chronological order.
 * Each entry includes timestamp, release version, commit hash, health score, checksum manifest path, and signature file so audits and manual verification stay traceable.
 
-### 4.13 `report audit` — Generate compliance reports
+### 4.13 `verify manifest` — Validate release manifest
+
+```bash
+python3 -m yo.cli verify manifest
+python3 -m yo.cli verify manifest --json
+```
+
+* Confirms `data/logs/integrity_manifest.json` exists and can be parsed, verifies both checksum and release bundle signatures, and recomputes the recorded bundle hash.
+* Useful after cloning or restoring an environment—`--json` feeds CI checks while the human-readable output highlights any missing files or signature mismatches.
+* Combine with `yo verify signature` to double-check checksum authenticity before ingesting artifacts into another environment.
+
+### 4.14 `package` — Build signed release bundles
+
+```bash
+python3 -m yo.cli package release
+python3 -m yo.cli package release --version v0.5.0 --signer "Codex CI (auto) <codex-ci@local>"
+```
+
+* Collects the checksum manifest, signatures, audit output, telemetry summary, and verification ledger into `releases/release_<version>.tar.gz`, then signs the archive.
+* Writes an updated `data/logs/integrity_manifest.json` describing the bundle (version, commit SHA, health score, checksums, signatures).
+* Pass `--output` to override the `releases/` directory or `--manifest` to store the manifest elsewhere; `--json` prints machine-readable metadata for CI pipelines.
+* After packaging you can distribute the tarball + `.sig` and share the manifest so downstream users can run `yo verify manifest` followed by a direct `gpg --verify`.
+
+### 4.15 `report audit` — Generate compliance reports
 
 ```bash
 python3 -m yo.cli report audit
@@ -247,7 +270,7 @@ python3 -m yo.cli report audit --md --html
 * Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
 * CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
 
-### 4.14 `system` — Lifecycle tooling
+### 4.16 `system` — Lifecycle tooling
 
 ```bash
 python3 -m yo.cli system clean --dry-run
@@ -259,7 +282,7 @@ python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
 * `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
 * `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
 
-### 4.15 `help` — Discover commands and aliases
+### 4.17 `help` — Discover commands and aliases
 
 ```bash
 python3 -m yo.cli help
