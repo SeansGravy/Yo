@@ -101,5 +101,7 @@ def test_chat_fallback_always_returns_text(monkeypatch: pytest.MonkeyPatch) -> N
     reply_text = (reply_payload.get("text") or "").strip()
     assert reply_text == "async fallback text"
     assert payload.get("fallback") is True
+    assert payload.get("stream") is False
+    assert payload.get("type") == "chat_message"
     assert reply_text != ""
     assert payload.get("history"), "Expected history to be returned for fallback reply."

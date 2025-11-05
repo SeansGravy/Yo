@@ -248,7 +248,7 @@
         localStorage.setItem(historyKey, JSON.stringify({ session_id: sessionId, history }));
       }
 
-      function extractText(value) {
+      function textOf(value) {
         if (!value) {
           return '';
         }
@@ -343,7 +343,7 @@
 
       function handleChatEvent(event) {
         if (debugEnabled) {
-          const preview = extractText(event && event.reply).slice(0, 40);
+          const preview = textOf(event && event.reply).slice(0, 40);
           const eventType = event && event.type ? event.type : 'unknown';
           const eventSession = event && event.session_id ? event.session_id : 'none';
           console.debug('EVENT', eventType, eventSession, preview.slice(0, 60));
@@ -374,13 +374,16 @@
             streamTokenCount += (event.token || '').length;
             break;
           case 'chat_complete':
+          case 'chat_message':
             {
               clearSilentTimer();
-              const replyText = extractText(event.reply);
-              if (pendingAssistantEl && replyText) {
-                pendingAssistantEl.textContent = replyText;
-              } else if (replyText) {
-                appendAssistantBubble(replyText);
+              const replyText = textOf(event.reply);
+              if (replyText) {
+                if (pendingAssistantEl) {
+                  pendingAssistantEl.textContent = replyText;
+                } else {
+                  appendAssistantBubble(replyText);
+                }
               }
               pendingAssistantEl = null;
               streamTokenCount = 0;
@@ -388,7 +391,7 @@
                 storeHistory(event.history);
                 renderHistory(event.history);
               }
-              statusEl.textContent = event.fallback ? 'Fallback reply received.' : '';
+              statusEl.textContent = event.fallback ? 'REST fallback reply received.' : '';
             }
             break;
           case 'chat_fallback':
@@ -396,27 +399,6 @@
               updateDebug('Server requested REST fallback.');
             }
             statusEl.textContent = 'Fallback reply in progress…';
-            break;
-          case 'chat_message':
-            {
-              clearSilentTimer();
-              const replyText = extractText(event.reply);
-              if (replyText) {
-                if (pendingAssistantEl) {
-                  pendingAssistantEl.textContent = replyText;
-                  pendingAssistantEl = null;
-                } else {
-                  appendAssistantBubble(replyText);
-                }
-              }
-              if (Array.isArray(event.history)) {
-                storeHistory(event.history);
-                renderHistory(event.history);
-              }
-              streamTokenCount = 0;
-              pendingAssistantEl = null;
-              statusEl.textContent = event.fallback ? 'REST fallback reply received.' : '';
-            }
             break;
           default:
             break;
@@ -459,33 +441,35 @@
             localStorage.setItem(sessionKey, sessionId);
           }
           const fallbackUsed = Boolean(payload.fallback);
-          const replyText = extractText(payload.reply);
+          const replyText = textOf(payload.reply);
           const history = Array.isArray(payload.history) ? payload.history : [];
           if (history.length) {
             storeHistory(history);
             renderHistory(history);
           }
-            if (!payload.stream && replyText) {
-              if (pendingAssistantEl) {
-                pendingAssistantEl.textContent = replyText;
-                pendingAssistantEl = null;
-              } else {
-                appendAssistantBubble(replyText);
-              }
-              streamTokenCount = 0;
-              statusEl.textContent = fallbackUsed ? 'REST fallback reply received.' : '';
-              clearSilentTimer();
-            } else if (replyText && streamTokenCount === 0) {
-              if (pendingAssistantEl) {
-                pendingAssistantEl.textContent = replyText;
-                pendingAssistantEl = null;
-              } else {
-                appendAssistantBubble(replyText);
-              }
-              streamTokenCount = 0;
-              statusEl.textContent = fallbackUsed ? 'REST fallback reply received.' : '';
-              clearSilentTimer();
+          if (!payload.stream && replyText) {
+            if (pendingAssistantEl) {
+              pendingAssistantEl.textContent = replyText;
+              pendingAssistantEl = null;
+            } else {
+              appendAssistantBubble(replyText);
             }
+            pendingAssistantEl = null;
+            streamTokenCount = 0;
+            statusEl.textContent = fallbackUsed ? 'REST fallback reply received.' : '';
+            clearSilentTimer();
+          } else if (replyText && streamTokenCount === 0) {
+            if (pendingAssistantEl) {
+              pendingAssistantEl.textContent = replyText;
+              pendingAssistantEl = null;
+            } else {
+              appendAssistantBubble(replyText);
+            }
+            pendingAssistantEl = null;
+            streamTokenCount = 0;
+            statusEl.textContent = fallbackUsed ? 'REST fallback reply received.' : '';
+            clearSilentTimer();
+          }
 
             if (!fallbackUsed) {
               statusEl.textContent = '';

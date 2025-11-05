@@ -911,6 +911,7 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         fallback=True,
                     )
                     reply_dict = _coerce_reply_dict(reply_text, default_text="[fallback reply unavailable]")
+                    stream_actual = False
                     fallback_log = {
                         "event": "fallback_result",
                         "namespace": namespace,
@@ -924,6 +925,12 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         "fallback result namespace=%s text=%s",
                         namespace,
                         reply_dict.get("text", "")[:120],
+                    )
+                    chat_logger.info(
+                        "deliver fallback sid=%s stream=%s txt_len=%d",
+                        session_id,
+                        False,
+                        len(reply_dict.get("text", "") or ""),
                     )
                     _log_fallback_emit(session_id, namespace, reply_dict)
                 except asyncio.TimeoutError:
@@ -963,6 +970,7 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         citations=citations,
                     )
                     reply_dict = _coerce_reply_dict(reply_text, default_text=timeout_reply)
+                    stream_actual = False
                     fallback_log = {
                         "event": "fallback_result",
                         "namespace": namespace,
@@ -978,6 +986,12 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         "fallback result namespace=%s text=%s",
                         namespace,
                         reply_dict.get("text", "")[:120],
+                    )
+                    chat_logger.info(
+                        "deliver fallback sid=%s stream=%s txt_len=%d",
+                        session_id,
+                        False,
+                        len(reply_dict.get("text", "") or ""),
                     )
                     _log_fallback_emit(session_id, namespace, reply_dict)
                 except Exception as exc:  # pragma: no cover
@@ -1013,6 +1027,12 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         namespace,
                         reply_dict.get("text", "")[:120],
                     )
+                    chat_logger.info(
+                        "deliver fallback sid=%s stream=%s txt_len=%d",
+                        session_id,
+                        False,
+                        len(reply_dict.get("text", "") or ""),
+                    )
                     _log_fallback_emit(session_id, namespace, reply_dict)
     except ValueError as exc:
         chat_logger.error("chat validation error namespace=%s: %s", namespace, exc)
@@ -1034,6 +1054,8 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
     first_token_latency_ms = metadata.get("first_token_latency_ms")
     fallback_used = bool(metadata.get("fallback_used") or fallback_triggered)
     metadata["fallback_used"] = fallback_used
+    if fallback_used:
+        stream_actual = False
 
     chat_logger.info(
         "chat complete namespace=%s stream=%s fallback=%s tokens=%s elapsed=%.1fms",
@@ -1085,6 +1107,8 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         else:
             ws_metric_value = 100
         record_metric("ws_success_rate", value=ws_metric_value)
+        if fallback_used:
+            record_metric("chat_fallback_empty", value=0 if reply_text_value else 1)
     except Exception:  # pragma: no cover
         chat_logger.warning("Unable to record chat metrics.", exc_info=True)
 

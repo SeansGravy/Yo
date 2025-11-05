@@ -210,16 +210,6 @@ class ChatSessionStore:
                     "first_token_latency_ms": first_token_latency_ms,
                     "fallback_used": fallback_used,
                 }
-                complete_event = {
-                    "type": "chat_complete",
-                    "session_id": session.session_id,
-                    "namespace": namespace,
-                    "reply": self._reply_payload(reply_text),
-                    "history": history_snapshot,
-                    "fallback": fallback_used,
-                    "first_token_latency_ms": first_token_latency_ms,
-                }
-                publish_event("chat_complete", complete_event)
                 message_event = {
                     "type": "chat_message",
                     "session_id": session.session_id,
@@ -230,6 +220,16 @@ class ChatSessionStore:
                     "fallback": fallback_used,
                 }
                 publish_event("chat_message", message_event)
+                complete_event = {
+                    "type": "chat_complete",
+                    "session_id": session.session_id,
+                    "namespace": namespace,
+                    "reply": self._reply_payload(reply_text),
+                    "history": history_snapshot,
+                    "fallback": fallback_used,
+                    "first_token_latency_ms": first_token_latency_ms,
+                }
+                publish_event("chat_complete", complete_event)
                 if fallback_used:
                     publish_event(
                         "chat_fallback",
