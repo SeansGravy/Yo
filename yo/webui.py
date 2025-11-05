@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
@@ -31,6 +31,8 @@ from yo.telemetry import (
 from yo.release import (
     DEFAULT_MANIFEST_PATH,
     load_integrity_manifest,
+    load_release_manifest,
+    list_release_manifests,
     verify_integrity_manifest,
 )
 
@@ -139,6 +141,29 @@ def _build_error_response(
     return JSONResponse(status_code=status_code, content=error_payload)
 
 
+def _collect_release_entries() -> list[dict[str, Any]]:
+    releases: list[dict[str, Any]] = []
+    for manifest in list_release_manifests():
+        manifest_path = Path(manifest.get("manifest_path", DEFAULT_MANIFEST_PATH))
+        verify_result = verify_integrity_manifest(manifest_path)
+        status = "verified" if verify_result.get("success") else "failed"
+        status_reason = "; ".join(verify_result.get("errors", [])) if verify_result.get("errors") else ""
+        releases.append(
+            {
+                "version": manifest.get("version"),
+                "timestamp": manifest.get("timestamp"),
+                "health": manifest.get("health"),
+                "bundle": manifest.get("release_bundle"),
+                "signature": manifest.get("bundle_signature"),
+                "manifest": manifest.get("manifest_path"),
+                "status": status,
+                "status_reason": status_reason,
+            }
+        )
+    releases.sort(key=lambda item: item.get("timestamp") or "", reverse=True)
+    return releases
+
+
 @app.get("/healthz", response_class=JSONResponse)
 def healthcheck() -> dict[str, Any]:
     """Simple readiness probe for the Lite UI."""
@@ -157,6 +182,13 @@ def render_ui(request: Request) -> HTMLResponse:
 
     context = {"request": request, "app_version": app.version}
     return templates.TemplateResponse("ui.html", context)
+
+
+@app.get("/api/docs", include_in_schema=False)
+def api_docs_redirect() -> RedirectResponse:
+    """Expose OpenAPI docs under /api/docs."""
+
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/api/status", response_class=JSONResponse)
@@ -259,6 +291,7 @@ def api_status() -> JSONResponse:
             verification_info = {}
 
     manifest_data = load_integrity_manifest()
+    releases_list = _collect_release_entries()
     release_info: dict[str, Any] = {}
     if manifest_data:
         release_info = {
@@ -308,30 +341,61 @@ def api_status() -> JSONResponse:
         "timestamp": datetime.utcnow().isoformat(),
         "verification": verification_info,
         "release": release_info,
+        "releases": releases_list,
     }
 
     return JSONResponse(content=payload)
 
 
+@app.get("/api/releases", response_class=JSONResponse)
+def api_releases() -> JSONResponse:
+    """List packaged releases."""
+
+    releases = _collect_release_entries()
+    return JSONResponse(content={"releases": releases})
+
+
 @app.get("/api/release/latest", response_class=JSONResponse)
 def api_release_latest() -> JSONResponse:
-    """Return integrity manifest verification for the latest release."""
+    """Return metadata for the latest release."""
 
-    result = verify_integrity_manifest(DEFAULT_MANIFEST_PATH)
-    if not result.get("manifest"):
-        raise HTTPException(status_code=404, detail="Integrity manifest not found.")
-    return JSONResponse(content=result)
+    releases = _collect_release_entries()
+    if not releases:
+        raise HTTPException(status_code=404, detail="No releases packaged yet.")
+    return JSONResponse(content={"release": releases[0]})
 
 
 @app.get("/api/release/{version}", response_class=JSONResponse)
 def api_release_version(version: str) -> JSONResponse:
     """Return release metadata for a requested version."""
 
-    result = verify_integrity_manifest(DEFAULT_MANIFEST_PATH)
-    manifest = result.get("manifest") or {}
-    if manifest.get("version") != version:
+    manifest = load_release_manifest(version)
+    if manifest is None:
         raise HTTPException(status_code=404, detail=f"No release data for version {version}.")
-    return JSONResponse(content=result)
+    return JSONResponse(content={"manifest": manifest})
+
+
+@app.get("/api/release/{version}/verify", response_class=JSONResponse)
+def api_release_version_verify(version: str) -> JSONResponse:
+    """Verify release integrity for a given version."""
+
+    manifest = load_release_manifest(version)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail=f"No release data for version {version}.")
+    manifest_path = Path(manifest.get("manifest_path", DEFAULT_MANIFEST_PATH))
+    verification = verify_integrity_manifest(manifest_path)
+    artifact_sig = verification.get("artifact_signature") or {}
+    bundle_sig = verification.get("bundle_signature") or {}
+    payload = {
+        "version": version,
+        "success": verification.get("success"),
+        "signature_valid": bool(artifact_sig.get("success")) if artifact_sig else verification.get("success"),
+        "bundle_signature_valid": bool(bundle_sig.get("success")) if bundle_sig else None,
+        "checksum_match": verification.get("checksum_valid"),
+        "errors": verification.get("errors", []),
+        "manifest_path": str(manifest_path),
+    }
+    return JSONResponse(content=payload)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -341,7 +405,8 @@ def dashboard(_: Request) -> HTMLResponse:
     dependencies = load_dependency_history(limit=5)
     trend = compute_trend(history, days=7)
     telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
-    manifest_data = load_integrity_manifest()
+    release_entries = _collect_release_entries()
+    latest_release = release_entries[0] if release_entries else None
     ledger_entry: dict[str, Any] | None = None
     signature_path = Path("data/logs/checksums/artifact_hashes.sig")
     ledger_path = Path("data/logs/verification_ledger.jsonl")
@@ -461,23 +526,38 @@ def dashboard(_: Request) -> HTMLResponse:
         </section>
         """
 
-    if manifest_data:
+    if release_entries:
+        def _badge(entry: dict[str, Any]) -> str:
+            status = entry.get("status")
+            if status == "verified":
+                return "🟢 Verified"
+            if status == "failed":
+                return "🔴 Failed"
+            return "🟡 Pending"
+
+        release_rows = "".join(
+            "<tr><td>{version}</td><td>{health}</td><td>{timestamp}</td><td>{badge}</td><td>{bundle}</td></tr>".format(
+                version=entry.get("version", "unknown"),
+                health=entry.get("health", "n/a"),
+                timestamp=entry.get("timestamp", "unknown"),
+                badge=_badge(entry),
+                bundle=entry.get("bundle", "n/a"),
+            )
+            for entry in release_entries
+        )
         release_block = f"""
         <section>
-          <h2>Release Bundle</h2>
-          <ul>
-            <li>Version: {manifest_data.get('version', 'unknown')}</li>
-            <li>Bundle: {manifest_data.get('release_bundle', 'n/a')}</li>
-            <li>Signature: {manifest_data.get('bundle_signature', 'n/a')}</li>
-            <li>Checksum: {manifest_data.get('bundle_checksum', 'n/a')}</li>
-            <li>Manifest: {DEFAULT_MANIFEST_PATH}</li>
-          </ul>
+          <h2>Releases</h2>
+          <table>
+            <thead><tr><th>Version</th><th>Health</th><th>Timestamp</th><th>Status</th><th>Bundle</th></tr></thead>
+            <tbody>{release_rows}</tbody>
+          </table>
         </section>
         """
     else:
         release_block = """
         <section>
-          <h2>Release Bundle</h2>
+          <h2>Releases</h2>
           <p>No release bundle packaged yet. Run <code>yo package release</code> after verification.</p>
         </section>
         """

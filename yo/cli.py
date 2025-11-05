@@ -47,6 +47,8 @@ from yo.telemetry import (
 from yo.release import (
     build_release_bundle,
     load_integrity_manifest,
+    load_release_manifest,
+    list_release_manifests,
     verify_integrity_manifest,
 )
 from yo.signing import verify_signature
@@ -135,6 +137,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "cache": "Utilities",
     "compact": "Maintenance",
     "package": "Release",
+    "release": "Release",
     "verify": "Validation",
     "doctor": "Validation",
     "health": "Insights",
@@ -1287,7 +1290,7 @@ def _handle_dashboard_cli(_: argparse.Namespace, __: YoBrain | None = None) -> N
 
 
 def _handle_system_clean(args: argparse.Namespace, __: YoBrain | None = None) -> None:
-    removed = system_clean(dry_run=args.dry_run, older_than_days=args.older_than)
+    removed = system_clean(dry_run=args.dry_run, older_than_days=args.older_than, release=args.release)
     if args.dry_run:
         print("🧪 Dry run — files that would be removed:")
     else:
@@ -1466,8 +1469,51 @@ def _handle_package_release(args: argparse.Namespace, __: YoBrain | None = None)
     print(f"📦 Release bundle created: {payload['bundle']}")
     print(f"🔐 Signature: {payload['signature']}")
     print(f"📝 Manifest: {payload['manifest']}")
+    manifest_version_path = result.get("manifest_version")
+    if manifest_version_path:
+        print(f"🗂️  Version manifest: {manifest_version_path}")
     if payload.get("version"):
         print(f"Version: {payload['version']} @ {payload.get('commit', 'unknown')} (health {payload.get('health', 'n/a')})")
+
+
+def _handle_release_list(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    releases = list_release_manifests()
+    if getattr(args, "json", False):
+        print(json.dumps(releases, indent=2))
+        return
+
+    if not releases:
+        print("ℹ️  No release bundles packaged yet.")
+        return
+
+    print("📦 Packaged releases:\n")
+    for entry in releases:
+        timestamp = entry.get("timestamp", "unknown")
+        version = entry.get("version", "unknown")
+        health = entry.get("health", "n/a")
+        bundle = entry.get("release_bundle", "-")
+        print(f"• {version} — health {health} @ {timestamp}")
+        print(f"   Bundle: {bundle}")
+
+
+def _handle_release_info(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    manifest = load_release_manifest(args.version)
+    if manifest is None:
+        print(f"❌ Release manifest for {args.version} not found.")
+        raise SystemExit(1)
+
+    if getattr(args, "json", False):
+        print(json.dumps(manifest, indent=2))
+        return
+
+    print(f"📦 Release {manifest.get('version', args.version)}")
+    print(f"Commit: {manifest.get('commit', 'unknown')}")
+    print(f"Health: {manifest.get('health', 'n/a')}")
+    print(f"Packaged: {manifest.get('timestamp', 'unknown')}")
+    print(f"Bundle: {manifest.get('release_bundle', '-')}")
+    print(f"Signature: {manifest.get('bundle_signature', '-')}")
+    print(f"Checksum: {manifest.get('bundle_checksum', '-')}")
+    print(f"Manifest: {manifest.get('manifest_path', '-')}")
 
 
 def _handle_verify_manifest(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1868,6 +1914,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=14,
         help="Remove logs older than this many days (default: 14)",
     )
+    system_clean_parser.add_argument(
+        "--release",
+        action="store_true",
+        help="Also remove packaged releases and integrity manifests",
+    )
     system_clean_parser.set_defaults(handler=_handle_system_clean)
 
     system_snapshot_parser = system_sub.add_parser("snapshot", help="Create a configuration snapshot archive", description="Create snapshot")
@@ -1930,6 +1981,18 @@ def build_parser() -> argparse.ArgumentParser:
     package_release_parser.add_argument("--json", action="store_true", help="Output result as JSON")
     package_release_parser.set_defaults(handler=_handle_package_release)
 
+    release_parser = _add_top_level("release", help_text="Inspect packaged releases", category="Release")
+    release_sub = release_parser.add_subparsers(dest="release_command", required=True)
+
+    release_list_parser = release_sub.add_parser("list", help="List packaged releases", description="List packaged releases")
+    release_list_parser.add_argument("--json", action="store_true", help="Output releases as JSON")
+    release_list_parser.set_defaults(handler=_handle_release_list)
+
+    release_info_parser = release_sub.add_parser("info", help="Show manifest details for a release", description="Show release manifest details")
+    release_info_parser.add_argument("version", help="Release version to inspect (e.g., v0.5.0)")
+    release_info_parser.add_argument("--json", action="store_true", help="Output manifest as JSON")
+    release_info_parser.set_defaults(handler=_handle_release_info)
+
     verify_parser = _add_top_level("verify", help_text="Run the regression test suite", category="Validation")
     verify_parser.set_defaults(handler=run_test, verify_command=None)
     verify_sub = verify_parser.add_subparsers(dest="verify_command")
@@ -1986,6 +2049,7 @@ def main() -> None:
         "health",
         "system",
         "package",
+        "release",
         "help",
     }:
         ns_override = getattr(args, "ns", None)

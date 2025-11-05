@@ -84,6 +84,7 @@ scripts/setup_yo_dev.sh
 ## 🛠 Lifecycle & Snapshot Tools
 
 - `yo system clean [--dry-run]` removes stale logs and lock files (or previews the files it would delete).
+- `yo system clean --release` clears previously packaged bundles and integrity manifests so you can rebuild from a clean slate before tagging.
 - `yo system snapshot [--name release_candidate]` archives configuration, telemetry, and log files to `data/snapshots/…tar.gz`.
 - `yo system restore <archive>` safely restores telemetry/config data (with path validation to prevent archive traversal).
 - Lifecycle events and snapshot metadata are tracked in `data/logs/lifecycle_history.json` so audits stay reproducible.
@@ -105,7 +106,9 @@ scripts/setup_yo_dev.sh
 
 - `yo package release [--version v0.5.0] [--signer "Codex CI (auto) <codex-ci@local>"]` gathers signed checksums, telemetry, audits, and the verification ledger into a compressed bundle under `releases/`, then signs the archive and writes `data/logs/integrity_manifest.json`.
 - `yo verify manifest [--json]` validates the integrity manifest, confirms signature authenticity for the checksum file and release bundle, and checks bundle hashes against the recorded value—perfect for post-clone assurance or CI gating.
-- The manifest powers new REST endpoints (`/api/release/latest` and `/api/release/<version>`) and the dashboard’s trust badge so anyone can download and verify the latest release directly from Yo.
+- `yo release list` and `yo release info <version>` surface every packaged bundle, including signer metadata, health score, and signed artifact paths.
+- The manifest powers new REST endpoints (`/api/releases`, `/api/release/<version>`, `/api/release/<version>/verify`) and the dashboard’s trust badge so anyone can download and verify the latest release directly from Yo.
+- A scheduled CI workflow (`release-verification.yml`) re-runs manifest verification daily, writes `data/logs/release_verification.json`, and appends a `recheck: true` entry to the ledger—Actions summaries highlight the latest pass/fail state automatically.
 - Docs now include a quick-start snippet for manual GPG verification:
   ```bash
   python3 -m yo.cli verify manifest

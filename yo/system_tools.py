@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, List
 
+from yo.release import DEFAULT_MANIFEST_PATH, DEFAULT_RELEASE_DIR, RELEASE_MANIFEST_PREFIX
 LOG_DIR = Path("data/logs")
 SNAPSHOT_DIR = Path("data/snapshots")
 CONFIG_FILES = [
@@ -65,7 +66,7 @@ def _record_lifecycle_event(action: str, detail: dict[str, Any]) -> None:
     LIFECYCLE_HISTORY_PATH.write_text(json.dumps(history[-200:], indent=2), encoding="utf-8")
 
 
-def system_clean(dry_run: bool = False, older_than_days: int = 14) -> List[Path]:
+def system_clean(dry_run: bool = False, older_than_days: int = 14, release: bool = False) -> List[Path]:
     """Remove stale logs and temporary artifacts."""
 
     removed: List[Path] = []
@@ -76,22 +77,57 @@ def system_clean(dry_run: bool = False, older_than_days: int = 14) -> List[Path]
         stat = path.stat()
         if datetime.utcfromtimestamp(stat.st_mtime) < cutoff:
             if not dry_run:
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
             removed.append(path)
 
     lock_path = Path("data/.milvus_lite.db.lock")
     if lock_path.exists():
         if not dry_run:
-            lock_path.unlink(missing_ok=True)
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
         removed.append(lock_path)
+
+    if release:
+        release_dir = DEFAULT_RELEASE_DIR
+        if release_dir.exists():
+            for path in release_dir.glob("release_*.tar.gz*"):
+                removed.append(path)
+                if not dry_run:
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+            for manifest_file in release_dir.glob(f"{RELEASE_MANIFEST_PREFIX}*.json"):
+                removed.append(manifest_file)
+                if not dry_run:
+                    try:
+                        manifest_file.unlink()
+                    except FileNotFoundError:
+                        pass
+        if DEFAULT_MANIFEST_PATH.exists():
+            removed.append(DEFAULT_MANIFEST_PATH)
+            if not dry_run:
+                try:
+                    DEFAULT_MANIFEST_PATH.unlink()
+                except FileNotFoundError:
+                    pass
+
+    detail = {
+        "removed": [str(path) for path in removed],
+        "older_than_days": older_than_days,
+        "count": len(removed),
+    }
+    if release:
+        detail["release"] = True
 
     _record_lifecycle_event(
         "clean_preview" if dry_run else "clean",
-        {
-            "removed": [str(path) for path in removed],
-            "older_than_days": older_than_days,
-            "count": len(removed),
-        },
+        detail,
     )
 
     return removed

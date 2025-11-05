@@ -257,7 +257,18 @@ python3 -m yo.cli package release --version v0.5.0 --signer "Codex CI (auto) <co
 * Pass `--output` to override the `releases/` directory or `--manifest` to store the manifest elsewhere; `--json` prints machine-readable metadata for CI pipelines.
 * After packaging you can distribute the tarball + `.sig` and share the manifest so downstream users can run `yo verify manifest` followed by a direct `gpg --verify`.
 
-### 4.15 `report audit` — Generate compliance reports
+### 4.15 `release` — Inspect packaged releases
+
+```bash
+python3 -m yo.cli release list
+python3 -m yo.cli release info v0.5.0 --json
+```
+
+* `list` prints every release recorded under `releases/`, including health score, timestamp, and signed bundle path.
+* `info <version>` loads the stored manifest, showing the signer, bundle checksum, and signature paths for that specific build; `--json` emits machine-friendly metadata.
+* Combine with `yo package release` to validate packaging before pushing artifacts upstream.
+
+### 4.16 `report audit` — Generate compliance reports
 
 ```bash
 python3 -m yo.cli report audit
@@ -270,19 +281,21 @@ python3 -m yo.cli report audit --md --html
 * Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
 * CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
 
-### 4.16 `system` — Lifecycle tooling
+### 4.17 `system` — Lifecycle tooling
 
 ```bash
 python3 -m yo.cli system clean --dry-run
+python3 -m yo.cli system clean --release
 python3 -m yo.cli system snapshot --name rc_candidate
 python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
 ```
 
 * `clean` removes (or previews) stale logs and lock files produced during testing.
+* `clean --release` purges previously packaged bundles, manifests, and signatures so you can regenerate artifacts from a clean slate before publishing.
 * `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
 * `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
 
-### 4.17 `help` — Discover commands and aliases
+### 4.18 `help` — Discover commands and aliases
 
 ```bash
 python3 -m yo.cli help
@@ -345,7 +358,21 @@ Need machine-readable data? Hit [http://localhost:8000/api/status](http://localh
 
 ---
 
-## 7. Troubleshooting & Tips
+## 7. Release Integrity API
+
+Yo’s REST API also publishes release metadata so you can verify bundles without touching the CLI:
+
+- `GET /api/releases` returns every stored manifest together with the latest verification outcome.
+- `GET /api/release/latest` returns the newest release entry (mirrors the dashboard badge).
+- `GET /api/release/<version>` serves the raw manifest for that version.
+- `GET /api/release/<version>/verify` re-runs manifest verification on demand and reports signature + checksum status as JSON.
+- `/api/docs` redirects to FastAPI’s OpenAPI schema, making it trivial to explore the endpoints in a browser.
+
+Combine these endpoints with `yo release list` or the dashboard’s Releases table to keep automation and humans aligned on shipped artifacts.
+
+---
+
+## 8. Troubleshooting & Tips
 
 | Issue | Likely Cause | Fix |
 | ----- | ------------ | --- |
@@ -364,7 +391,7 @@ Need machine-readable data? Hit [http://localhost:8000/api/status](http://localh
 
 ---
 
-## 8. Roadmap Snapshot
+## 9. Roadmap Snapshot
 
 See [`ROADMAP.md`](ROADMAP.md) for the detailed feature roadmap and [`Yo_Handoff_Report.md`](Yo_Handoff_Report.md) for the current release status.
 

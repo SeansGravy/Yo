@@ -1,0 +1,84 @@
+name: Yo Release Integrity Check
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  verify_release_integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+
+      - name: Verify latest release manifest
+        id: verify
+        run: |
+          mkdir -p data/logs
+          python3 - <<'PY'
+import json
+import datetime
+from pathlib import Path
+from yo.release import verify_integrity_manifest, DEFAULT_MANIFEST_PATH
+
+result = verify_integrity_manifest(DEFAULT_MANIFEST_PATH)
+Path("data/logs/release_verification.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+entry = {
+    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+    "recheck": True,
+    "success": result.get("success"),
+    "version": (result.get("manifest") or {}).get("version"),
+    "errors": result.get("errors", []),
+}
+ledger_path = Path("data/logs/verification_ledger.jsonl")
+ledger_path.parent.mkdir(parents=True, exist_ok=True)
+with ledger_path.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(entry) + "\n")
+
+if not result.get("success"):
+    raise SystemExit("Release verification failed.")
+PY
+
+      - name: Publish verification summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+summary_path = Path("data/logs/release_verification.json")
+if summary_path.exists():
+    result = json.loads(summary_path.read_text(encoding="utf-8"))
+    version = (result.get("manifest") or {}).get("version", "unknown")
+    status = "✅ Passed" if result.get("success") else "❌ Failed"
+    errors = ", ".join(result.get("errors", [])) or "None"
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "a", encoding="utf-8") as fh:
+            fh.write("### Release Verification\n")
+            fh.write(f"- Version: {version}\n")
+            fh.write(f"- Status: {status}\n")
+            fh.write(f"- Errors: {errors}\n")
+PY
+
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verification
+          path: |
+            data/logs/release_verification.json
+            data/logs/verification_ledger.jsonl

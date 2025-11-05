@@ -66,6 +66,8 @@ def test_verify_integrity_manifest_success(tmp_path: Path, monkeypatch: pytest.M
         "bundle_checksum": bundle_checksum,
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    version_manifest_path = Path("releases") / f"{release.RELEASE_MANIFEST_PREFIX}v0.5.0.json"
+    version_manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     monkeypatch.setattr(
         release,
@@ -76,3 +78,9 @@ def test_verify_integrity_manifest_success(tmp_path: Path, monkeypatch: pytest.M
     result = release.verify_integrity_manifest(manifest_path)
     assert result["success"] is True
     assert result["checksum_valid"] is True
+
+    manifests = release.list_release_manifests(release_dir="releases")
+    assert manifests and manifests[0]["version"] == "v0.5.0"
+
+    loaded = release.load_release_manifest("v0.5.0", release_dir="releases", manifest_path=manifest_path)
+    assert loaded is not None and loaded["version"] == "v0.5.0"

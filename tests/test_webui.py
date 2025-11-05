@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - skip when FastAPI is unavailable
 from yo.backends import BackendStatus, BackendSummary
 from yo.brain import MissingDependencyError
 from yo import webui
+from yo import release as release_module
 
 
 class FakeUpload:
@@ -118,6 +119,31 @@ def dummy_client(monkeypatch: pytest.MonkeyPatch, healthy_backends: BackendSumma
     (logs_dir / "checksums").mkdir(parents=True, exist_ok=True)
     (logs_dir / "checksums" / "artifact_hashes.txt").write_text("hash", encoding="utf-8")
     (logs_dir / "checksums" / "artifact_hashes.sig").write_text("sig", encoding="utf-8")
+    manifest_payload = {
+        "version": "v0.5.0",
+        "commit": "abc1234",
+        "timestamp": "2025-11-07T00:00:00Z",
+        "health": 97.2,
+        "release_bundle": "releases/release_v0.5.0.tar.gz",
+        "bundle_signature": "releases/release_v0.5.0.tar.gz.sig",
+        "bundle_checksum": "deadbeef",
+        "manifest_path": str(Path("releases") / f"{release_module.RELEASE_MANIFEST_PREFIX}v0.5.0.json"),
+    }
+    (logs_dir / "integrity_manifest.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
+    releases_dir = Path("releases")
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    (releases_dir / f"{release_module.RELEASE_MANIFEST_PREFIX}v0.5.0.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
+    monkeypatch.setattr(webui, "list_release_manifests", lambda: [manifest_payload])
+    monkeypatch.setattr(
+        webui,
+        "load_release_manifest",
+        lambda version: dict(manifest_payload) if version == "v0.5.0" else None,
+    )
+    monkeypatch.setattr(
+        webui,
+        "verify_integrity_manifest",
+        lambda path: {"success": True, "errors": [], "checksum_valid": True, "artifact_signature": {"success": True}, "bundle_signature": {"success": True}},
+    )
     (logs_dir / "verification_ledger.jsonl").write_text(json.dumps({
         "timestamp": "2025-01-01T00:00:00Z",
         "version": "v-ledger",
@@ -144,6 +170,8 @@ def test_status_endpoint_reports_namespaces(dummy_client: tuple[TestClient, Dumm
     assert payload["drift_window"] == "7d"
     assert payload["verification"]["version"] == "v-ledger"
     assert payload["ingestion"]["enabled"] is True
+    assert payload["release"]["version"] == "v0.5.0"
+    assert payload["releases"][0]["status"] == "verified"
 
 
 def test_ingest_endpoint_uses_brain(
@@ -194,6 +222,24 @@ def test_ui_route_serves_dashboard(dummy_client: tuple[TestClient, DummyBrain]) 
     response = client.get("/ui")
     assert response.status_code == 200
     assert "Yo Lite UI" in response.text
+
+
+def test_release_endpoints(dummy_client: tuple[TestClient, DummyBrain]) -> None:
+    client, _ = dummy_client
+
+    manifest = client.get("/api/release/v0.5.0")
+    assert manifest.status_code == 200
+    assert manifest.json()["manifest"]["version"] == "v0.5.0"
+
+    releases = client.get("/api/releases")
+    assert releases.status_code == 200
+    assert releases.json()["releases"][0]["version"] == "v0.5.0"
+
+    verify = client.get("/api/release/v0.5.0/verify")
+    assert verify.status_code == 200
+    payload = verify.json()
+    assert payload["version"] == "v0.5.0"
+    assert payload["success"] is True
 
 
 def test_status_endpoint_disables_ingestion_when_backends_missing(

@@ -305,6 +305,7 @@ def test_handle_package_release_prints_paths(monkeypatch: pytest.MonkeyPatch, ca
             "bundle": "releases/release_v0.5.0.tar.gz",
             "signature": "releases/release_v0.5.0.tar.gz.sig",
             "manifest": "data/logs/integrity_manifest.json",
+            "manifest_version": "releases/integrity_manifest_v0.5.0.json",
             "manifest_data": {
                 "version": "v0.5.0",
                 "commit": "abc1234",
@@ -336,6 +337,52 @@ def test_handle_verify_manifest_json(monkeypatch: pytest.MonkeyPatch, capsys: py
     payload = json.loads(capsys.readouterr().out)
     assert payload["success"] is True
     assert payload["manifest"]["version"] == "v0.5.0"
+
+
+def test_handle_release_list_prints(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(
+        cli,
+        "list_release_manifests",
+        lambda: [
+            {
+                "version": "v0.5.0",
+                "timestamp": "2025-11-07T04:00:00Z",
+                "health": 95.2,
+                "release_bundle": "releases/release_v0.5.0.tar.gz",
+            }
+        ],
+    )
+
+    cli._handle_release_list(argparse.Namespace(json=False), None)
+    output = capsys.readouterr().out
+    assert "v0.5.0" in output
+    assert "release_v0.5.0.tar.gz" in output
+
+
+def test_handle_release_info_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(
+        cli,
+        "load_release_manifest",
+        lambda version: {"version": version, "commit": "abc123", "manifest_path": "releases/integrity.json"},
+    )
+
+    cli._handle_release_info(argparse.Namespace(version="v0.5.0", json=True), None)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["version"] == "v0.5.0"
+    assert payload["manifest_path"] == "releases/integrity.json"
+
+
+def test_handle_system_clean_release(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_clean(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli, "system_clean", fake_clean)
+
+    cli._handle_system_clean(argparse.Namespace(dry_run=False, older_than=14, release=True), None)
+    assert captured.get("release") is True
 def test_telemetry_analyze_release(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(
         cli,

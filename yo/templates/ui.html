@@ -192,8 +192,20 @@
       <div id="verification-summary">No signed verification recorded yet.</div>
     </section>
     <section>
-      <h2>Release Bundle</h2>
-      <div id="release-summary">No release bundle packaged yet.</div>
+      <h2>Releases</h2>
+      <table id="release-table">
+        <thead>
+          <tr>
+            <th>Version</th>
+            <th>Health</th>
+            <th>Timestamp</th>
+            <th>Status</th>
+            <th>Bundle</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="release-caption" class="notice small"></p>
     </section>
     <section>
       <h2>Namespaces</h2>
@@ -342,28 +354,44 @@
         `;
       }
 
-      function renderRelease(release) {
-        const container = document.getElementById('release-summary');
-        if (!container) {
+      function renderReleases(releases) {
+        const tbody = document.querySelector('#release-table tbody');
+        const caption = document.getElementById('release-caption');
+        if (!tbody) {
           return;
         }
-        if (!release || Object.keys(release).length === 0) {
-          container.textContent = 'No release bundle packaged yet.';
+        tbody.innerHTML = '';
+        if (!Array.isArray(releases) || releases.length === 0) {
+          const row = document.createElement('tr');
+          const cell = document.createElement('td');
+          cell.colSpan = 5;
+          cell.textContent = 'No release bundle packaged yet.';
+          row.appendChild(cell);
+          tbody.appendChild(row);
+          if (caption) caption.textContent = '';
           return;
         }
-        const version = release.version || 'unknown';
-        const bundle = release.bundle || 'n/a';
-        const signature = release.bundle_signature || 'n/a';
-        const checksum = release.bundle_checksum || 'n/a';
-        const timestamp = release.timestamp ? new Date(release.timestamp).toLocaleString() : '—';
-        container.innerHTML = `
-          <p><strong>Status:</strong> ${release.health && Number(release.health) >= 0 ? '🟢 Verified' : '🟡 Pending'}</p>
-          <p><strong>Version:</strong> ${version}</p>
-          <p><strong>Bundle:</strong> ${bundle}</p>
-          <p><strong>Signature:</strong> ${signature}</p>
-          <p><strong>Checksum:</strong> ${checksum}</p>
-          <p><strong>Updated:</strong> ${timestamp}</p>
-        `;
+        for (const release of releases) {
+          const row = document.createElement('tr');
+          const status = release.status;
+          let badge = '🟡 Pending';
+          if (status === 'verified') badge = '🟢 Verified';
+          if (status === 'failed') badge = '🔴 Failed';
+          const fields = [
+            release.version || 'unknown',
+            release.health ?? 'n/a',
+            release.timestamp ? new Date(release.timestamp).toLocaleString() : '—',
+            badge,
+            release.bundle || 'n/a',
+          ];
+          for (const value of fields) {
+            const cell = document.createElement('td');
+            cell.textContent = value;
+            row.appendChild(cell);
+          }
+          tbody.appendChild(row);
+        }
+        if (caption) caption.textContent = 'Status badges reflect the most recent integrity check.';
       }
 
       function renderNamespaces(namespaces, driftWindow) {
@@ -452,7 +480,7 @@
           renderBackends(data.backends);
           renderHealth(data.health);
           renderVerification(data.verification);
-          renderRelease(data.release);
+          renderReleases(data.releases);
           renderNamespaces(data.namespaces, data.drift_window);
           updateIngestionState(data.ingestion);
           updateWarningBanner(data.warning);

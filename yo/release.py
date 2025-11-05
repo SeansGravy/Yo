@@ -32,6 +32,7 @@ OPTIONAL_ARTIFACTS = [
 
 DEFAULT_RELEASE_DIR = Path("releases")
 DEFAULT_MANIFEST_PATH = Path("data/logs/integrity_manifest.json")
+RELEASE_MANIFEST_PREFIX = "integrity_manifest_"
 
 
 def _run_git(args: list[str]) -> str | None:
@@ -104,6 +105,7 @@ def build_release_bundle(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     version_value = version or detect_version()
+    version_token = version_value.replace("/", "_")
     commit_value = detect_commit()
     timestamp = datetime.utcnow().isoformat()
 
@@ -144,10 +146,14 @@ def build_release_bundle(
     }
 
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    version_manifest_path = release_dir / f"{RELEASE_MANIFEST_PREFIX}{version_token}.json"
+    version_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest["manifest_path"] = str(version_manifest_path)
     return {
         "bundle": str(bundle_path),
         "signature": str(signature_path),
         "manifest": str(manifest_path),
+        "manifest_version": str(version_manifest_path),
         "manifest_data": manifest,
     }
 
@@ -226,3 +232,56 @@ def verify_integrity_manifest(path: Path | str = DEFAULT_MANIFEST_PATH) -> dict[
         "bundle_signature": bundle_signature_result,
         "checksum_valid": checksum_valid,
     }
+
+
+def list_release_manifests(
+    release_dir: Path | str = DEFAULT_RELEASE_DIR,
+) -> list[dict[str, Any]]:
+    """List all stored release manifests."""
+
+    release_path = Path(release_dir)
+    if not release_path.exists():
+        return []
+
+    manifests: list[dict[str, Any]] = []
+    for manifest_file in release_path.glob(f"{RELEASE_MANIFEST_PREFIX}*.json"):
+        try:
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        data = dict(data)
+        data["manifest_path"] = str(manifest_file)
+        manifests.append(data)
+
+    def _sort_key(entry: dict[str, Any]) -> tuple:
+        timestamp = entry.get("timestamp") or ""
+        return (timestamp, entry.get("version") or "")
+
+    return sorted(manifests, key=_sort_key, reverse=True)
+
+
+def load_release_manifest(
+    version: str,
+    *,
+    release_dir: Path | str = DEFAULT_RELEASE_DIR,
+    manifest_path: Path | str = DEFAULT_MANIFEST_PATH,
+) -> dict[str, Any] | None:
+    """Load a manifest for the requested version."""
+
+    release_path = Path(release_dir)
+    version_token = version.replace("/", "_")
+    candidate = release_path / f"{RELEASE_MANIFEST_PREFIX}{version_token}.json"
+    if candidate.exists():
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            data["manifest_path"] = str(candidate)
+            return data
+        except json.JSONDecodeError:
+            return None
+
+    latest = load_integrity_manifest(manifest_path)
+    if latest and latest.get("version") == version:
+        latest = dict(latest)
+        latest["manifest_path"] = str(manifest_path)
+        return latest
+    return None
