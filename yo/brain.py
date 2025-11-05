@@ -238,6 +238,13 @@ class YoBrain:
     def _connect_milvus(self) -> None:
         """Connect to Milvus Lite, handling locked database recovery."""
 
+        lock_path = self.db_path.parent / ".milvus_lite.db.lock"
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
         try:
             connections.disconnect(alias="default")
         except Exception:
