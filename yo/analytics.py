@@ -67,6 +67,8 @@ def record_chat_interaction(
     tokens: int,
     stream: bool,
     history_length: int,
+    fallback: bool,
+    first_token_latency_ms: float | None,
 ) -> None:
     payload = {
         "timestamp": _utc_now().isoformat().replace("+00:00", "Z"),
@@ -77,7 +79,10 @@ def record_chat_interaction(
         "tokens": int(tokens),
         "stream": bool(stream),
         "turns": int(history_length),
+        "fallback": bool(fallback),
     }
+    if first_token_latency_ms is not None:
+        payload["first_token_latency_ms"] = round(float(first_token_latency_ms), 2)
     _write_entry(payload)
 
 
@@ -134,6 +139,8 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     chat_sessions = Counter()
     chat_latency: List[float] = []
     chat_tokens: List[int] = []
+    chat_first_token: List[float] = []
+    chat_fallbacks = 0
     ingest_counts = Counter()
     ingest_duration: List[float] = []
 
@@ -149,6 +156,10 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
                 chat_latency.append(float(entry["latency_seconds"]))
             if isinstance(entry.get("tokens"), (int, float)):
                 chat_tokens.append(int(entry["tokens"]))
+            if isinstance(entry.get("first_token_latency_ms"), (int, float)):
+                chat_first_token.append(float(entry["first_token_latency_ms"]))
+            if entry.get("fallback"):
+                chat_fallbacks += 1
         elif entry_type == "ingest":
             ingest_counts[entry.get("namespace", "default")] += 1
             if isinstance(entry.get("duration_seconds"), (int, float)):
@@ -168,6 +179,8 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
             "by_namespace": chat_sessions.most_common(),
             "avg_latency_seconds": _average(chat_latency),
             "avg_tokens": _average(chat_tokens),
+            "avg_first_token_latency_ms": _average(chat_first_token),
+            "fallback_count": chat_fallbacks,
         },
         "ingest": {
             "total_runs": sum(ingest_counts.values()),

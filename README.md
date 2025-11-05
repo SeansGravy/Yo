@@ -102,6 +102,14 @@ scripts/setup_yo_dev.sh
 - `yo health monitor [--json]` evaluates the most recent verification run, health score, and update cadence, writing results to `data/logs/health_monitor.jsonl`. A failing status exits with code 1 so CI or CRON jobs can alert immediately.
 - The hourly GitHub Actions workflow `.github/workflows/health-monitor.yml` runs the same command and uploads the JSONL log, giving the team a rolling audit of system freshness and pass rates.
 
+## 🧯 Troubleshooting the :8000 Hang
+
+- Launch with instrumentation: `python3 -m yo.cli web --debug --port 8010` (or `yo web --debug --port 8010`). Debug mode enables asyncio tracing, faulthandler dumps, and request logging to `data/logs/web_startup.log`.
+- If the server stalls, inspect `data/logs/web_startup.log`, `data/logs/ws_errors.log`, and `data/logs/web_deadlock.dump` for the stuck coroutine.
+- Quickly verify availability with `yo health web --host 127.0.0.1 --port 8010 --timeout 5`; follow up with `yo health chat` / `yo health ws` to assert `/api/chat` replies and `/ws/chat` streams produce tokens.
+- Capture a reproducible diagnostics bundle with `yo logs collect --chat-bug [--har <browser.har>]`—the ZIP contains recent startup logs, WebSocket errors, metrics tail, and optional HAR traces under `data/logs/`.
+- The automated smoke test (`tests/test_web_e2e_port.py`) starts the server on a real port, hits `/api/health`, `/dashboard`, `/api/chat`, and `/ws/chat/*`. Run it locally with `python3 -m pytest tests/test_web_e2e_port.py -q` to reproduce environment issues.
+
 ## 📈 Metrics & Analytics
 
 - `yo metrics summarize --since 24h` aggregates verification duration, pass rate, chat latency, and ingestion throughput from `data/logs/metrics.jsonl`. The Lite UI hits `/api/metrics` to populate the new Metrics panel automatically.

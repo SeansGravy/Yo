@@ -25,7 +25,7 @@ LOGGER = get_logger(__name__)
 WS_ERROR_LOG = Path("data/logs/ws_errors.log")
 
 
-def _log_ws_error(message: str) -> None:
+def log_ws_error(message: str) -> None:
     try:
         WS_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.utcnow().isoformat() + "Z"
@@ -115,8 +115,9 @@ class UpdateBroadcaster:
         for websocket in connections:
             try:
                 await websocket.send_text(message)
+                await asyncio.sleep(0)
             except Exception:  # pragma: no cover - network failure
-                _log_ws_error(f"broadcast to {getattr(websocket, 'client', 'unknown')} failed")
+                log_ws_error(f"broadcast to {getattr(websocket, 'client', 'unknown')} failed")
                 stale.append(websocket)
         for ws in stale:
             await self.disconnect(ws)

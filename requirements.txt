@@ -11,6 +11,7 @@ pytest
 pytest-asyncio
 httpx
 websockets
+playwright
 
 # --- LangChain stack ---
 langchain

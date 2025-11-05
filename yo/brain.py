@@ -7,6 +7,7 @@ and simple web-context caching for the optional web-aware mode.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -1170,6 +1171,44 @@ class YoBrain:
             "citations": citations,
         }
         return payload
+
+    async def chat_async(
+        self,
+        *,
+        message: str,
+        namespace: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        web: bool = False,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Asynchronous wrapper around ``chat`` with a timeout safeguard."""
+
+        if not message:
+            raise ValueError("Message cannot be empty.")
+
+        loop = asyncio.get_running_loop()
+        effective_timeout = timeout if timeout is not None else float(os.environ.get("YO_CHAT_TIMEOUT", 8.0))
+        namespace = namespace or self.active_namespace
+        preview = message[:80]
+
+        def _invoke() -> dict[str, Any]:
+            return self.chat(
+                message=message,
+                namespace=namespace,
+                history=history,
+                web=web,
+            )
+
+        try:
+            return await asyncio.wait_for(loop.run_in_executor(None, _invoke), timeout=effective_timeout)
+        except asyncio.TimeoutError:
+            self._logger.warning("Chat timeout reached namespace=%s message=%s", namespace, preview)
+            return {
+                "response": "[timeout] Yo chat request exceeded the configured limit.",
+                "context": "",
+                "citations": [],
+                "fallback_used": True,
+            }
 
     def chat_stream(
         self,

@@ -180,6 +180,34 @@ PY
             yo_test_results_*.log
             docs/CHANGELOG.md
 
+  web-e2e:
+    runs-on: ubuntu-latest
+    name: Web E2E Smoke Test
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+      - name: Install Playwright browsers
+        run: python3 -m playwright install chromium
+
+      - name: Run web smoke test
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 -m pytest tests/test_web_e2e_port.py -q -x
+      - name: Run browser chat E2E test
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python3 -m pytest tests/e2e/test_chat_browser.py -q -x
       - name: Check artifact sizes
         if: ${{ success() }}
         run: |

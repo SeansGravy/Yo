@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+import contextlib
+import faulthandler
+import socket
+import threading
 import time
 from datetime import datetime, timedelta
 from importlib import util as import_util
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, IO
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -47,13 +52,127 @@ from yo.release import (
     list_release_manifests,
     verify_integrity_manifest,
 )
-from yo.websocket import UpdateBroadcaster
+from yo.websocket import UpdateBroadcaster, log_ws_error
 from yo.optimizer import generate_recommendations, apply_recommendations
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 JINJA_AVAILABLE = import_util.find_spec("jinja2") is not None
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR)) if JINJA_AVAILABLE else None
+
+
+WEB_START_LOG = Path("data/logs/web_startup.log")
+DEADLOCK_DUMP_PATH = Path("data/logs/web_deadlock.dump")
+REQUEST_LOG_LIMIT = 10
+
+
+CHAT_TIMING_LOG = Path("data/logs/chat_timing.log")
+CHAT_SLOW_THRESHOLD_MS = 4000.0
+CHAT_TIMEOUT_DEFAULT = 8.0
+CHAT_STREAM_TIMEOUT_DEFAULT = 3.0
+
+
+def _is_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+SERVER_HOST = os.getenv("YO_WEB_HOST", "127.0.0.1")
+SERVER_PORT = int(os.getenv("YO_WEB_PORT", "8000"))
+WEB_DEBUG = _is_truthy(os.getenv("YO_WEB_DEBUG"))
+SERVER_READY = False
+
+_request_log_count = 0
+_deadlock_handle: IO[bytes] | None = None
+_deadlock_active = False
+_startup_lock = threading.Lock()
+_startup_logged = False
+_start_time = time.time()
+
+
+def _append_startup_log(message: str) -> None:
+    try:
+        WEB_START_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with WEB_START_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.utcnow().isoformat()}Z {message}\n")
+    except OSError:
+        logger.warning("Failed to write startup log entry: %s", message)
+
+
+def _schedule_deadlock_dump() -> None:
+    global _deadlock_handle, _deadlock_active
+    if _deadlock_active:
+        return
+    try:
+        DEADLOCK_DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _deadlock_handle = open(DEADLOCK_DUMP_PATH, "wb")
+        faulthandler.dump_traceback_later(15, repeat=False, file=_deadlock_handle)
+        _deadlock_active = True
+    except OSError as exc:  # pragma: no cover - filesystem failure
+        logger.warning("Unable to schedule deadlock dump: %s", exc)
+
+
+def _cancel_deadlock_dump() -> None:
+    global _deadlock_handle, _deadlock_active
+    if not _deadlock_active:
+        return
+    try:
+        faulthandler.cancel_dump_traceback_later()
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if _deadlock_handle:
+        try:
+            _deadlock_handle.close()
+        except Exception:
+            pass
+        _deadlock_handle = None
+    _deadlock_active = False
+
+
+def configure_runtime(host: str, port: int, *, debug: bool | None = None) -> None:
+    global SERVER_HOST, SERVER_PORT, WEB_DEBUG
+    SERVER_HOST = host
+    SERVER_PORT = port
+    if debug is not None:
+        WEB_DEBUG = bool(debug)
+        if debug:
+            os.environ["YO_WEB_DEBUG"] = "1"
+        else:
+            os.environ.pop("YO_WEB_DEBUG", None)
+    else:
+        WEB_DEBUG = _is_truthy(os.getenv("YO_WEB_DEBUG"))
+    if WEB_DEBUG:
+        try:
+            faulthandler.enable()
+        except Exception:
+            pass
+    with _startup_lock:
+        global _startup_logged
+        if not _startup_logged:
+            _append_startup_log(
+                f"Starting Yo web server host={host} port={port} pid={os.getpid()}"
+            )
+            _startup_logged = True
+    logger.warning("Yo web starting: host=%s port=%s debug=%s", host, port, WEB_DEBUG)
+    _schedule_deadlock_dump()
+
+
+def _log_request_event(message: str) -> None:
+    global _request_log_count
+    if _request_log_count >= REQUEST_LOG_LIMIT:
+        return
+    _append_startup_log(message)
+    _request_log_count += 1
+
+
+def _write_chat_timing(entry: dict[str, Any]) -> None:
+    try:
+        CHAT_TIMING_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with CHAT_TIMING_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+    except OSError:  # pragma: no cover - logging must not break API
+        logger.warning("Unable to write chat timing entry.")
 
 
 @lru_cache(maxsize=1)
@@ -64,6 +183,7 @@ def get_brain() -> YoBrain:
 
 
 logger = get_logger(__name__)
+chat_logger = get_logger("chat")
 
 app = FastAPI(title="Yo Lite UI", version="0.4.0")
 
@@ -96,6 +216,24 @@ class OptimizeApplyRequest(BaseModel):
 
 
 event_bus = get_event_bus()
+
+
+@app.middleware("http")
+async def _startup_logging_middleware(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        _log_request_event(f"HTTP {request.method} {request.url.path} -> EXC ({exc})")
+        _cancel_deadlock_dump()
+        raise
+    elapsed = time.perf_counter() - start
+    _log_request_event(
+        f"HTTP {request.method} {request.url.path} -> {response.status_code} ({elapsed:.3f}s)"
+    )
+    if response.status_code < 500:
+        _cancel_deadlock_dump()
+    return response
 
 
 def _format_backend(status: BackendStatus) -> dict[str, Any]:
@@ -211,7 +349,16 @@ def _collect_release_entries() -> list[dict[str, Any]]:
 def healthcheck() -> dict[str, Any]:
     """Simple readiness probe for the Lite UI."""
 
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    status = "ok" if SERVER_READY else "starting"
+    return {"status": status, "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/health", response_class=JSONResponse)
+async def api_health() -> JSONResponse:
+    status = "ok" if SERVER_READY else "starting"
+    payload = {"status": status, "timestamp": datetime.utcnow().isoformat()}
+    code = 200 if status == "ok" else 503
+    return JSONResponse(content=payload, status_code=code)
 
 
 @app.get("/ui", response_class=HTMLResponse)
@@ -478,28 +625,55 @@ async def websocket_events(websocket: WebSocket) -> None:
         while True:
             event = await queue.get()
             await websocket.send_text(json.dumps(event))
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as exc:
+        record_metric(
+            "ws_connect_error",
+            code=getattr(exc, "code", 0) or 0,
+            reason=str(getattr(exc, "reason", "disconnect")),
+        )
         await event_bus.unsubscribe(queue)
-    except Exception:  # pragma: no cover
+    except Exception as exc:  # pragma: no cover
+        record_metric("ws_connect_error", code=-1, reason=str(exc))
         await event_bus.unsubscribe(queue)
 
 
 @app.websocket("/ws/chat/{session_id}")
 async def websocket_chat_stream(session_id: str, websocket: WebSocket) -> None:
     await websocket.accept()
+    _log_request_event(f"WS connect session={session_id}")
+    _cancel_deadlock_dump()
     queue = await event_bus.subscribe()
+
+    async def _ping_loop() -> None:
+        try:
+            while True:
+                await asyncio.sleep(15)
+                payload = json.dumps({"type": "chat_ping", "timestamp": datetime.utcnow().isoformat() + "Z"})
+                await websocket.send_text(payload)
+        except Exception:
+            pass
+
+    ping_task = asyncio.create_task(_ping_loop())
     try:
         while True:
             event = await queue.get()
             if event.get("session_id") != session_id:
                 continue
-            if event.get("type") not in {"chat_token", "chat_complete", "chat_message", "chat_started"}:
+            if event.get("type") not in {"chat_token", "chat_complete", "chat_message", "chat_started", "chat_fallback"}:
                 continue
             await websocket.send_text(json.dumps(event))
+            await asyncio.sleep(0)
     except WebSocketDisconnect:
         await event_bus.unsubscribe(queue)
-    except Exception:  # pragma: no cover
+    except Exception as exc:  # pragma: no cover
+        log_ws_error(f"chat stream failure for session {session_id}: {exc}")
         await event_bus.unsubscribe(queue)
+    finally:
+        ping_task.cancel()
+        with contextlib.suppress(Exception):
+            await ping_task
+        with contextlib.suppress(Exception):
+            await event_bus.unsubscribe(queue)
 
 
 def build_config_payload() -> dict[str, Any]:
@@ -569,18 +743,95 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
     elif stream_mode == "off":
         stream_requested = True
 
+    chat_timeout = float(os.environ.get("YO_CHAT_TIMEOUT", CHAT_TIMEOUT_DEFAULT))
+    stream_timeout = float(os.environ.get("YO_CHAT_STREAM_TIMEOUT", CHAT_STREAM_TIMEOUT_DEFAULT))
+    timeout_for_stream = stream_timeout if stream_timeout > 0 else chat_timeout
+
+    async def _run_sync(func: callable, timeout: float, **kwargs):
+        loop = asyncio.get_running_loop()
+        bound = partial(func, **kwargs)
+        return await asyncio.wait_for(loop.run_in_executor(None, bound), timeout=timeout)
+
     started = time.perf_counter()
+    fallback_triggered = False
+    session_id = payload.session_id
+    reply = ""
+    history: list[dict[str, str]] = []
+    metadata: dict[str, Any] = {}
+
+    truncated_msg = message[:120]
+    chat_logger.info("chat start namespace=%s stream=%s message=%s", namespace, stream_requested, truncated_msg)
+    _write_chat_timing(
+        {
+            "event": "start",
+            "namespace": namespace,
+            "session_id": session_id,
+            "stream": stream_requested,
+            "message": truncated_msg,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+
     try:
         if stream_requested:
-            session_id, reply, history, metadata = chat_store.stream(
-                brain=brain,
-                namespace=namespace,
-                message=message,
-                session_id=payload.session_id,
-                web=payload.web,
-            )
+            try:
+                session_id, reply, history, metadata = await _run_sync(
+                    chat_store.stream,
+                    timeout=timeout_for_stream,
+                    brain=brain,
+                    namespace=namespace,
+                    message=message,
+                    session_id=payload.session_id,
+                    web=payload.web,
+                )
+            except asyncio.TimeoutError:
+                fallback_triggered = True
+                chat_logger.warning(
+                    "chat stream timeout namespace=%s timeout=%.2fs message=%s",
+                    namespace,
+                    timeout_for_stream,
+                    truncated_msg,
+                )
+                try:
+                    session_id, reply, history, metadata = await _run_sync(
+                        chat_store.send,
+                        timeout=chat_timeout,
+                        brain=brain,
+                        namespace=namespace,
+                        message=message,
+                        session_id=payload.session_id,
+                        web=payload.web,
+                    )
+                except asyncio.TimeoutError:
+                    fallback_triggered = True
+                    fallback_reply = "[timeout] Yo chat request exceeded the configured limit."
+                    existing_session = chat_store.session(payload.session_id)
+                    history_payload = existing_session.as_history() if existing_session else None
+                    async_result = await brain.chat_async(
+                        message=message,
+                        namespace=namespace,
+                        history=history_payload,
+                        web=payload.web,
+                        timeout=chat_timeout,
+                    )
+                    context = async_result.get("context")
+                    citations = async_result.get("citations") or []
+                    reply_candidate = async_result.get("response") or fallback_reply
+                    session_id, reply, history, metadata = chat_store.record_fallback(
+                        namespace=namespace,
+                        message=message,
+                        reply_text=reply_candidate,
+                        session_id=payload.session_id,
+                        context=context,
+                        citations=citations,
+                    )
+                except Exception as exc:  # pragma: no cover
+                    chat_logger.exception("chat fallback send errored namespace=%s: %s", namespace, exc)
+                    raise HTTPException(status_code=500, detail="Chat fallback failed.") from exc
         else:
-            session_id, reply, history, metadata = chat_store.send(
+            session_id, reply, history, metadata = await _run_sync(
+                chat_store.send,
+                timeout=chat_timeout,
                 brain=brain,
                 namespace=namespace,
                 message=message,
@@ -588,27 +839,86 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                 web=payload.web,
             )
     except ValueError as exc:
+        chat_logger.error("chat validation error namespace=%s: %s", namespace, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except asyncio.TimeoutError:
+        chat_logger.warning("chat timeout namespace=%s message=%s", namespace, truncated_msg)
+        raise HTTPException(status_code=504, detail="Chat request timed out.") from None
+    except Exception as exc:
+        chat_logger.exception("chat error namespace=%s: %s", namespace, exc)
+        raise HTTPException(status_code=500, detail="Chat failed.") from exc
 
-    latency = time.perf_counter() - started
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    metadata = metadata or {}
+    tokens_emitted = metadata.get("tokens_emitted", 0)
+    first_token_latency_ms = metadata.get("first_token_latency_ms")
+    fallback_used = bool(metadata.get("fallback_used") or fallback_triggered)
+    metadata["fallback_used"] = fallback_used
+
+    chat_logger.info(
+        "chat complete namespace=%s stream=%s fallback=%s tokens=%s elapsed=%.1fms",
+        namespace,
+        stream_requested,
+        fallback_used,
+        tokens_emitted,
+        elapsed_ms,
+    )
+    _write_chat_timing(
+        {
+            "event": "complete",
+            "namespace": namespace,
+            "session_id": session_id,
+            "stream": stream_requested,
+            "fallback": fallback_used,
+            "tokens": tokens_emitted,
+            "elapsed_ms": round(elapsed_ms, 2),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+
+    if elapsed_ms > CHAT_SLOW_THRESHOLD_MS:
+        try:
+            record_metric(
+                "chat_slow",
+                namespace=namespace,
+                elapsed_ms=round(elapsed_ms, 2),
+                stream=stream_requested,
+                fallback=fallback_used,
+            )
+        except Exception:  # pragma: no cover
+            chat_logger.warning("Unable to record chat_slow metric.", exc_info=True)
+
     reply_text = reply or ""
+    try:
+        record_metric(
+            "chat",
+            namespace=namespace,
+            latency_seconds=round(elapsed_ms / 1000.0, 3),
+            tokens=len(reply_text),
+            stream=stream_requested,
+            history_length=len(history),
+            fallback=fallback_used,
+            tokens_emitted=tokens_emitted,
+            first_token_latency_ms=first_token_latency_ms,
+        )
+        ws_metric_value = 100 if not stream_requested else (0 if fallback_used else 100)
+        record_metric("ws_success_rate", value=ws_metric_value)
+    except Exception:  # pragma: no cover
+        chat_logger.warning("Unable to record chat metrics.", exc_info=True)
 
-    record_metric(
-        "chat",
-        namespace=namespace,
-        latency_seconds=round(latency, 3),
-        tokens=len(reply_text),
-        stream=stream_requested,
-        history_length=len(history),
-    )
-    record_chat_interaction(
-        session_id,
-        namespace=namespace,
-        latency_seconds=latency,
-        tokens=len(reply_text),
-        stream=stream_requested,
-        history_length=len(history),
-    )
+    try:
+        record_chat_interaction(
+            session_id,
+            namespace=namespace,
+            latency_seconds=round(elapsed_ms / 1000.0, 3),
+            tokens=len(reply_text),
+            stream=stream_requested,
+            history_length=len(history),
+            fallback=fallback_used,
+            first_token_latency_ms=first_token_latency_ms,
+        )
+    except Exception:  # pragma: no cover
+        chat_logger.warning("Unable to record chat analytics.", exc_info=True)
 
     response_payload = {
         "session_id": session_id,
@@ -618,6 +928,9 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         "context": metadata.get("context"),
         "citations": metadata.get("citations", []),
         "stream": stream_requested,
+        "fallback": fallback_used,
+        "tokens_emitted": tokens_emitted,
+        "first_token_latency_ms": first_token_latency_ms,
     }
     return JSONResponse(content=response_payload)
 
@@ -636,12 +949,28 @@ broadcaster = UpdateBroadcaster(
 
 @app.on_event("startup")
 async def _startup_events() -> None:
+    _append_startup_log("Lifespan startup event")
     await broadcaster.start()
+    global SERVER_READY
+    SERVER_READY = True
+    elapsed = time.time() - _start_time
+    _append_startup_log(f"Startup complete in {elapsed:.2f}s (host={SERVER_HOST} port={SERVER_PORT})")
+    try:
+        record_metric(
+            "web_ready",
+            host=SERVER_HOST,
+            port=SERVER_PORT,
+            debug=int(bool(WEB_DEBUG)),
+        )
+    except Exception:  # pragma: no cover - telemetry failures shouldn't crash startup
+        logger.warning("Failed to record web_ready metric", exc_info=True)
 
 
 @app.on_event("shutdown")
 async def _shutdown_events() -> None:
     await broadcaster.stop()
+    _append_startup_log("Lifespan shutdown event")
+    _cancel_deadlock_dump()
 
 
 @app.get("/api/releases", response_class=JSONResponse)
@@ -1147,3 +1476,6 @@ def main() -> None:  # pragma: no cover - executed manually during development
 
 if __name__ == "__main__":  # pragma: no cover - manual execution path
     main()
+
+
+__all__ = ["app", "configure_runtime"]

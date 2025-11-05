@@ -40,6 +40,7 @@ def test_chat_ws_stream(monkeypatch):
 
     monkeypatch.setattr(webui.broadcaster, "start", _noop)
     monkeypatch.setattr(webui.broadcaster, "stop", _noop)
+    webui.configure_runtime("127.0.0.1", 0, debug=False)
 
     with TestClient(webui.app) as client:
         with client.websocket_connect("/ws/chat/integration") as websocket:

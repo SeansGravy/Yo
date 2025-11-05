@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import html
+import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import shutil
 import time
+import zipfile
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from statistics import mean
@@ -64,6 +68,8 @@ from yo.system_tools import (
 from yo import recovery
 from yo.chat import CHAT_DAILY_DIR
 from yo.events import EVENT_LOG_DIR, publish_event
+import httpx
+import websockets
 from yo.metrics import summarize_since, parse_since_window, record_metric
 from yo.analytics import analytics_enabled, load_analytics, record_cli_command, summarize_usage
 from yo.optimizer import generate_recommendations, apply_recommendations
@@ -184,6 +190,15 @@ def _read_log_tail(log_path: Path, lines: int) -> list[str]:
     return list(buffer)
 
 
+def _tail_file(path: Path, max_lines: int = 50) -> str:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return ""
+    return "".join(lines[-max_lines:])
+
+
 def _format_log_entry(kind: str, raw_line: str) -> str:
     try:
         record = json.loads(raw_line)
@@ -253,6 +268,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "telemetry": "Telemetry",
     "explain": "Telemetry",
     "dashboard": "Insights",
+    "web": "Utilities",
     "metrics": "Insights",
     "analytics": "Insights",
     "optimize": "Insights",
@@ -1241,6 +1257,14 @@ def _run_health_monitor(json_output: bool) -> None:
     ws_field = (ws_stats.get("fields") or {}).get("value") or {}
     ws_rate = ws_field.get("avg")
     result["ws_success_rate"] = ws_rate
+    chat_stats = (metrics_snapshot.get("types") or {}).get("chat", {})
+    chat_fields = chat_stats.get("fields", {})
+    fallback_avg = (chat_fields.get("fallback") or {}).get("avg")
+    first_token_avg = (chat_fields.get("first_token_latency_ms") or {}).get("avg")
+    if fallback_avg is not None:
+        result["chat_fallback_rate"] = fallback_avg
+    if first_token_avg is not None:
+        result["first_token_latency_ms"] = first_token_avg
     if ws_rate is not None:
         if ws_rate < 95:
             status = "fail"
@@ -1248,6 +1272,17 @@ def _run_health_monitor(json_output: bool) -> None:
         elif ws_rate < 98 and status == "ok":
             status = "warn"
             reasons.append(f"WebSocket success rate trending down ({ws_rate:.1f}%).")
+
+    if fallback_avg is not None:
+        result["chat_fallback_rate"] = fallback_avg
+        if fallback_avg > 0.25:
+            status = "fail"
+            reasons.append(f"Fallback usage too high ({fallback_avg * 100:.1f}% of chats).")
+        elif fallback_avg > 0.1 and status == "ok":
+            status = "warn"
+            reasons.append(f"Fallback usage elevated ({fallback_avg * 100:.1f}% of chats).")
+    if first_token_avg is not None:
+        result["first_token_latency_ms"] = first_token_avg
 
     result["status"] = status
 
@@ -1278,10 +1313,19 @@ def _run_health_monitor(json_output: bool) -> None:
 
 def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -> None:
     action = getattr(args, "action", "report") or "report"
+    if action == "monitor":
+        _run_health_monitor(getattr(args, "json", False))
+        return
+    if action == "web":
+        _handle_health_web(args, None)
+        return
+    if action == "chat":
+        _handle_health_chat(args, None)
+        return
+    if action == "ws":
+        _handle_health_ws(args, None)
+        return
     if action != "report":
-        if action == "monitor":
-            _run_health_monitor(getattr(args, "json", False))
-            return
         raise SystemExit(f"Unknown health action '{action}'. Try `yo health report`.")
 
     telemetry_summary = load_telemetry_summary() or build_telemetry_summary()
@@ -1312,8 +1356,17 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
     ws_rate = ws_field.get("avg")
     payload["ws_success_rate"] = ws_rate
 
+    chat_stats = (metrics_snapshot.get("types") or {}).get("chat", {})
+    chat_fields = chat_stats.get("fields", {})
+    fallback_avg = (chat_fields.get("fallback") or {}).get("avg")
+    first_token_avg = (chat_fields.get("first_token_latency_ms") or {}).get("avg")
+    payload["chat_fallback_rate"] = fallback_avg
+    payload["first_token_latency_ms"] = first_token_avg
+
     if ws_rate is not None and ws_rate < 95:
         payload.setdefault("alerts", []).append(f"WebSocket success rate {ws_rate:.1f}%")
+    if fallback_avg is not None and fallback_avg > 0.1:
+        payload.setdefault("alerts", []).append(f"Fallback usage {fallback_avg * 100:.1f}%")
 
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2))
@@ -1364,6 +1417,10 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
         print(f"\nWebSocket success rate (7d): {ws_rate:.1f}%")
         if ws_rate < 95:
             print("   ⚠️  Below target. Inspect `yo logs tail --ws` for details.")
+    if fallback_avg is not None:
+        print(f"Chat fallback usage (7d): {fallback_avg * 100:.1f}%")
+    if first_token_avg is not None:
+        print(f"First-token latency avg: {first_token_avg:.1f} ms")
 
 
 def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1785,6 +1842,188 @@ def _handle_logs_tail(args: argparse.Namespace, __: YoBrain | None = None) -> No
         print(f"   • {line}")
 
 
+def _handle_logs_collect(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    if not getattr(args, "chat_bug", False):
+        raise SystemExit("Specify --chat-bug to collect chat diagnostics.")
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    dest = Path(args.output or f"data/logs/chat_bug_{timestamp}.zip")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    log_map = {
+        "web_startup.log": Path("data/logs/web_startup.log"),
+        "ws_errors.log": Path("data/logs/ws_errors.log"),
+        "web_deadlock.dump": Path("data/logs/web_deadlock.dump"),
+    }
+    metrics_path = Path("data/logs/metrics.jsonl")
+    har_path = Path(args.har) if getattr(args, "har", None) else Path("data/logs/chat_bug.har")
+
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for arcname, src in log_map.items():
+            if src.exists():
+                archive.write(src, arcname=arcname)
+        if metrics_path.exists():
+            archive.writestr("metrics_tail.txt", _tail_file(metrics_path, 50))
+        if har_path.exists():
+            archive.write(har_path, arcname=har_path.name)
+
+    print(f"📦 Collected chat diagnostics -> {dest}")
+
+
+def _handle_health_web(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 8000)
+    timeout = getattr(args, "timeout", 5)
+    url = f"http://{host}:{port}/api/health"
+    try:
+        response = httpx.get(url, timeout=timeout)
+    except Exception as exc:
+        print(f"❌ Unable to reach {url}: {exc}")
+        raise SystemExit(1) from exc
+
+    if response.status_code != 200:
+        print(f"❌ Web health check failed (HTTP {response.status_code}): {response.text}")
+        raise SystemExit(1)
+
+    payload = response.json()
+    if payload.get("status") != "ok":
+        print(f"❌ Web server not ready: {payload}")
+        raise SystemExit(1)
+
+    print(f"✅ Web server healthy at {url}")
+
+
+def _handle_health_chat(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 8000)
+    timeout = getattr(args, "timeout", 8.0)
+    message = getattr(args, "message", "probe")
+    namespace = getattr(args, "ns", "default") or "default"
+
+    url = f"http://{host}:{port}/api/chat"
+    session_id = f"health-{int(time.time() * 1000)}"
+    payload = {
+        "namespace": namespace,
+        "message": message,
+        "session_id": session_id,
+        "stream": True,
+    }
+
+    try:
+        response = httpx.post(url, json=payload, timeout=timeout)
+    except Exception as exc:
+        print(f"❌ Chat probe failed: {exc}")
+        raise SystemExit(1) from exc
+
+    if response.status_code != 200:
+        print(f"❌ Chat probe returned HTTP {response.status_code}: {response.text}")
+        raise SystemExit(1)
+
+    data = response.json()
+    reply = (data.get("reply") or "").strip()
+    if not reply:
+        print(f"❌ Chat probe produced empty reply: {data}")
+        raise SystemExit(1)
+
+    print(f"✅ Chat probe succeeded (fallback={data.get('fallback')})")
+
+
+def _handle_health_ws(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 8000)
+    timeout = getattr(args, "timeout", 8.0)
+    message = getattr(args, "message", "probe")
+    namespace = getattr(args, "ns", "default") or "default"
+
+    session_id = f"health-{int(time.time() * 1000)}"
+    ws_url = f"ws://{host}:{port}/ws/chat/{session_id}"
+    chat_url = f"http://{host}:{port}/api/chat"
+
+    async def _probe() -> tuple[list[str], dict[str, Any]]:
+        messages: list[str] = []
+        async with websockets.connect(ws_url) as websocket:
+            response = httpx.post(
+                chat_url,
+                json={
+                    "namespace": namespace,
+                    "message": message,
+                    "session_id": session_id,
+                    "stream": True,
+                },
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    incoming = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    break
+                messages.append(incoming)
+                if "\"chat_complete\"" in incoming:
+                    break
+            return messages, payload
+
+    try:
+        ws_messages, payload = asyncio.run(_probe())
+    except Exception as exc:
+        print(f"❌ WebSocket probe failed: {exc}")
+        raise SystemExit(1) from exc
+
+    if any("\"chat_complete\"" in msg for msg in ws_messages) or (payload.get("reply") or "").strip():
+        print(f"✅ WebSocket probe succeeded (fallback={payload.get('fallback')})")
+        return
+
+    print("❌ WebSocket probe did not receive completion frame.")
+    raise SystemExit(1)
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError as exc:
+            raise SystemExit(f"Port {port} on {host} is unavailable: {exc}") from exc
+
+
+def _handle_web_run(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    host = getattr(args, "host", "127.0.0.1")
+    port = int(getattr(args, "port", 8000))
+    debug = bool(getattr(args, "debug", False))
+    reload_enabled = bool(getattr(args, "reload", False))
+
+    _ensure_port_available(host, port)
+
+    os.environ["YO_WEB_HOST"] = host
+    os.environ["YO_WEB_PORT"] = str(port)
+    os.environ["YO_WEB_RELOAD"] = "1" if reload_enabled else "0"
+    if debug:
+        os.environ["YO_WEB_DEBUG"] = "1"
+    else:
+        os.environ.pop("YO_WEB_DEBUG", None)
+
+    from yo import webui
+
+    webui.configure_runtime(host, port, debug=debug)
+
+    import uvicorn
+
+    config = uvicorn.Config(
+        "yo.webui:app",
+        host=host,
+        port=port,
+        log_level="info",
+        reload=reload_enabled,
+        loop="asyncio",
+        timeout_keep_alive=5,
+    )
+    server = uvicorn.Server(config)
+    try:
+        server.run()
+    except KeyboardInterrupt:  # pragma: no cover - manual stop
+        pass
 def _format_metric_value(value: float | None) -> str:
     if value is None:
         return "—"
@@ -2537,6 +2776,12 @@ def build_parser() -> argparse.ArgumentParser:
     logs_tail.add_argument("--json", action="store_true", help="Output raw JSON payload")
     logs_tail.set_defaults(handler=_handle_logs_tail)
 
+    logs_collect = logs_sub.add_parser("collect", help="Collect diagnostic logs", description="Collect log bundles")
+    logs_collect.add_argument("--chat-bug", action="store_true", help="Bundle chat-related diagnostics")
+    logs_collect.add_argument("--har", help="Path to a HAR file captured from the browser")
+    logs_collect.add_argument("--output", help="Destination zip path")
+    logs_collect.set_defaults(handler=_handle_logs_collect)
+
     metrics_parser = _add_top_level("metrics", help_text="Summarise recorded metrics", category="Insights")
     metrics_sub = metrics_parser.add_subparsers(dest="metrics_command", required=True)
     metrics_summary = metrics_sub.add_parser("summarize", help="Summarize collected metrics", description="Summarize metrics window")
@@ -2561,9 +2806,21 @@ def build_parser() -> argparse.ArgumentParser:
     optimize_apply.add_argument("--include-manual", action="store_true", help="Include manual recommendations in output")
     optimize_apply.set_defaults(handler=_handle_optimize_apply)
 
+    web_parser = _add_top_level("web", help_text="Launch the Yo web server", category="Utilities")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
+    web_parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
+    web_parser.add_argument("--debug", action="store_true", help="Enable debug instrumentation and faulthandler")
+    web_parser.add_argument("--reload", action="store_true", help="Enable auto-reload (development only)")
+    web_parser.set_defaults(handler=_handle_web_run)
+
     health_parser = _add_top_level("health", help_text="Overall system health insights", category="Insights")
     health_parser.add_argument("action", nargs="?", default="report", help=argparse.SUPPRESS)
     health_parser.add_argument("--json", action="store_true", help="Output report as JSON")
+    health_parser.add_argument("--host", default="127.0.0.1", help="Target host for web health checks")
+    health_parser.add_argument("--port", type=int, default=8000, help="Target port for web health checks")
+    health_parser.add_argument("--timeout", type=float, default=5.0, help="Timeout for web health probe (seconds)")
+    health_parser.add_argument("--message", default="probe", help="Probe message for chat/WebSocket health")
+    health_parser.add_argument("--ns", default="default", help="Namespace for chat/WebSocket probes")
     health_parser.set_defaults(handler=_handle_health_report)
 
     system_parser = _add_top_level("system", help_text="Lifecycle and maintenance tools", category="Maintenance")
@@ -2718,6 +2975,7 @@ def main() -> None:
         "system",
         "package",
         "release",
+        "web",
         "help",
     }:
         ns_override = getattr(args, "ns", None)

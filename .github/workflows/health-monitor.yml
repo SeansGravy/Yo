@@ -26,6 +26,14 @@ jobs:
         run: |
           python3 -m yo.cli health monitor --json | tee monitor_output.json
 
+      - name: Web health probe
+        run: |
+          python3 -m yo.cli health web --timeout 5
+
+      - name: Chat health probe
+        run: |
+          python3 -m yo.cli health chat --timeout 8
+
       - name: Append summary
         if: always()
         run: |

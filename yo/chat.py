@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -139,6 +140,11 @@ class ChatSessionStore:
                 session = self._new_session(namespace, session_id)
             history_payload = session.as_history()
 
+        start_time = time.perf_counter()
+        first_token_latency_ms: float | None = None
+        tokens_emitted = 0
+        fallback_used = False
+
         publish_event(
             "chat_started",
             {
@@ -157,6 +163,7 @@ class ChatSessionStore:
             if chunk.get("done"):
                 reply_text = chunk.get("response", "")
                 citations = chunk.get("citations") or []
+                fallback_used = tokens_emitted == 0
                 with self._lock:
                     session = self._sessions.get(session.session_id, session)  # type: ignore[arg-type]
                     session.history.append(ChatTurn(user=message, assistant=reply_text))
@@ -171,12 +178,16 @@ class ChatSessionStore:
                             "user": message,
                             "assistant": reply_text,
                             "timestamp": session.updated_at,
+                            "tokens": tokens_emitted,
                         }
                     )
 
                 metadata = {
                     "context": chunk.get("context"),
                     "citations": citations,
+                    "tokens_emitted": tokens_emitted,
+                    "first_token_latency_ms": first_token_latency_ms,
+                    "fallback_used": fallback_used,
                 }
                 publish_event(
                     "chat_complete",
@@ -185,12 +196,26 @@ class ChatSessionStore:
                         "namespace": namespace,
                         "reply": reply_text,
                         "history": history_snapshot,
+                        "fallback": fallback_used,
+                        "first_token_latency_ms": first_token_latency_ms,
                     },
                 )
+                if fallback_used:
+                    publish_event(
+                        "chat_fallback",
+                        {
+                            "session_id": session.session_id,
+                            "namespace": namespace,
+                            "message": message,
+                        },
+                    )
                 return session.session_id, reply_text, history_snapshot, metadata
 
             token = chunk.get("token", "")
             if token:
+                tokens_emitted += 1
+                if first_token_latency_ms is None:
+                    first_token_latency_ms = (time.perf_counter() - start_time) * 1000.0
                 publish_event(
                     "chat_token",
                     {
@@ -200,14 +225,15 @@ class ChatSessionStore:
                     },
                 )
                 self._append_daily_record(
-                    {
-                        "event": "token",
-                        "session_id": session.session_id,
-                        "namespace": namespace,
-                        "token": token,
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                    }
-                )
+                        {
+                            "event": "token",
+                            "session_id": session.session_id,
+                            "namespace": namespace,
+                            "token": token,
+                            "token_index": tokens_emitted,
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                        }
+                    )
 
         raise RuntimeError("Streaming chat ended unexpectedly without completion.")
 
@@ -235,3 +261,69 @@ class ChatSessionStore:
                 fh.write(json.dumps(record) + "\n")
         except OSError:
             pass
+
+    def record_fallback(
+        self,
+        *,
+        namespace: str,
+        message: str,
+        reply_text: str,
+        session_id: str | None = None,
+        context: Any | None = None,
+        citations: List[Any] | None = None,
+    ) -> Tuple[str, str, List[Dict[str, str]], Dict[str, Any]]:
+        with self._lock:
+            session = self._sessions.get(session_id) if session_id else None
+            if session is None or session.namespace != namespace:
+                session = self._new_session(namespace, session_id)
+            session.history.append(ChatTurn(user=message, assistant=reply_text))
+            session.updated_at = datetime.utcnow().isoformat() + "Z"
+            history_snapshot = session.as_history()
+            self._write_transcript(session)
+            self._append_daily_record(
+                {
+                    "event": "fallback",
+                    "session_id": session.session_id,
+                    "namespace": namespace,
+                    "user": message,
+                    "assistant": reply_text,
+                    "timestamp": session.updated_at,
+                }
+            )
+
+        publish_event(
+            "chat_message",
+            {
+                "session_id": session.session_id,
+                "namespace": namespace,
+                "message": message,
+                "reply": reply_text,
+            },
+        )
+        publish_event(
+            "chat_complete",
+            {
+                "session_id": session.session_id,
+                "namespace": namespace,
+                "reply": reply_text,
+                "history": history_snapshot,
+                "fallback": True,
+                "first_token_latency_ms": None,
+            },
+        )
+        publish_event(
+            "chat_fallback",
+            {
+                "session_id": session.session_id,
+                "namespace": namespace,
+                "message": message,
+            },
+        )
+        metadata = {
+            "context": context,
+            "citations": citations or [],
+            "tokens_emitted": 0,
+            "first_token_latency_ms": None,
+            "fallback_used": True,
+        }
+        return session.session_id, reply_text, history_snapshot, metadata

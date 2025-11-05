@@ -388,6 +388,20 @@ python3 -m yo.cli shell
 * `chat --stream` inside the REPL mirrors the CLI flag—tokens print live and citations appear as soon as the model finishes.
 * Press `Ctrl+D` or type `exit` when you are done; the REPL never modifies your `.env` unless you explicitly run the config commands.
 
+### 4.26 Troubleshooting: Web Server Hangs
+
+```bash
+python3 -m yo.cli web --debug --port 8010
+python3 -m yo.cli health web --host 127.0.0.1 --port 8010 --timeout 5
+```
+
+* Debug mode enables asyncio tracing, faulthandler dumps (`data/logs/web_deadlock.dump`), and request logs (`data/logs/web_startup.log`).
+* Check `data/logs/ws_errors.log` for WebSocket delivery problems.
+* If the default port is busy, pick a new one (e.g. `--port 8010`). The CLI refuses to start if the port is already bound and logs a clear error instead of hanging.
+* Probe the HTTP and streaming stack directly: `yo health web` confirms `/api/health` is live, `yo health chat` asserts `/api/chat` returns a reply, and `yo health ws` ensures `/ws/chat/<session>` emits a `chat_complete` frame.
+* Need to escalate an unresolved chat disconnect? Run `yo logs collect --chat-bug [--har <browser.har>]` to zip startup logs, WebSocket errors, a metrics tail, and any captured HAR files under `data/logs/chat_bug_*.zip`.
+* The end-to-end smoke test (`tests/test_web_e2e_port.py`) starts the server in a subprocess and asserts `/api/health`, `/dashboard`, `/api/chat`, and `/ws/chat/*` all respond. Run it locally with `python3 -m pytest tests/test_web_e2e_port.py -q` to replicate production issues.
+
 ---
 
 ## 5. Example Session

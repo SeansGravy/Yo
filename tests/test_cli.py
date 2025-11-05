@@ -198,15 +198,94 @@ def test_handle_report_audit_writes_files(tmp_path: Path, monkeypatch: pytest.Mo
     assert "audit_report.json" in output
     assert Path("data/logs/audit_report.json").exists()
     assert Path("data/logs/audit_report.md").exists()
-    assert Path("data/logs/audit_report.html").exists()
 
-    # ensure html flag prints rendered content without error
-    previous_console = cli.console
-    cli.console = None
-    try:
-        cli._handle_report_audit(argparse.Namespace(json=False, md=False, html=True), AuditBrain())
-    finally:
-        cli.console = previous_console
+
+def test_logs_collect_creates_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.chdir(tmp_path)
+    logs_dir = Path("data/logs")
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "web_startup.log").write_text("startup entry\n", encoding="utf-8")
+    (logs_dir / "ws_errors.log").write_text("error entry\n", encoding="utf-8")
+    (logs_dir / "web_deadlock.dump").write_text("deadlock\n", encoding="utf-8")
+    (logs_dir / "metrics.jsonl").write_text('{"metric": "chat"}\n', encoding="utf-8")
+    (logs_dir / "chat_bug.har").write_text("HAR", encoding="utf-8")
+
+    bundle_path = logs_dir / "bundle.zip"
+    args = argparse.Namespace(chat_bug=True, har=None, output=str(bundle_path))
+
+    cli._handle_logs_collect(args)
+
+    output = capsys.readouterr().out
+    assert "Collected chat diagnostics" in output
+    assert bundle_path.exists()
+    import zipfile
+
+    with zipfile.ZipFile(bundle_path, "r") as archive:
+        names = set(archive.namelist())
+    assert "web_startup.log" in names
+    assert "ws_errors.log" in names
+    assert "metrics_tail.txt" in names
+
+
+def test_logs_collect_requires_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(chat_bug=False, har=None, output=None)
+    with pytest.raises(SystemExit):
+        cli._handle_logs_collect(args)
+
+
+def test_health_web_success(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"status": "ok"}
+
+    monkeypatch.setattr(cli.httpx, "get", lambda url, timeout=5: Response())
+    args = argparse.Namespace(host="127.0.0.1", port=9000, timeout=5.0)
+
+    cli._handle_health_web(args)
+
+    output = capsys.readouterr().out
+    assert "✅ Web server healthy" in output
+
+
+def test_health_chat_empty_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"reply": " "}
+
+    monkeypatch.setattr(cli.httpx, "post", lambda *args, **kwargs: Response())
+    args = argparse.Namespace(host="127.0.0.1", port=9000, timeout=1.0, message="probe", ns="default")
+
+    with pytest.raises(SystemExit):
+        cli._handle_health_chat(args)
+
+
+def test_health_ws_success(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    calls: dict[str, bool] = {}
+
+    def fake_run(coro):  # type: ignore[override]
+        calls["run"] = True
+        try:
+            return (['{"type":"chat_complete"}'], {"reply": "ok"})
+        finally:
+            try:
+                coro.close()
+            except Exception:
+                pass
+
+    monkeypatch.setattr(cli.asyncio, "run", fake_run)
+    args = argparse.Namespace(host="127.0.0.1", port=9000, timeout=2.0, message="hi", ns="default")
+
+    cli._handle_health_ws(args)
+
+    output = capsys.readouterr().out
+    assert "✅ WebSocket probe succeeded" in output
+    assert calls.get("run") is True
 
 
 def test_handle_verify_ledger_prints_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

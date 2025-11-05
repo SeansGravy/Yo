@@ -309,6 +309,11 @@
           return;
         }
         switch (event.type) {
+          case 'chat_ping':
+            if (debugEnabled) {
+              updateDebug(`Ping received at ${event.timestamp || ''}`);
+            }
+            break;
           case 'chat_started':
             statusEl.textContent = 'Streaming…';
             break;
@@ -325,7 +330,17 @@
             const history = event.history || [];
             storeHistory(history);
             renderHistory(history);
-            statusEl.textContent = '';
+            if (event.fallback) {
+              statusEl.textContent = 'Fallback reply received.';
+            } else {
+              statusEl.textContent = '';
+            }
+            break;
+          case 'chat_fallback':
+            if (debugEnabled) {
+              updateDebug('Server requested REST fallback.');
+            }
+            statusEl.textContent = 'Fallback reply in progress…';
             break;
           case 'chat_message':
             // non-streaming completion
@@ -371,24 +386,34 @@
           const payload = await response.json();
           sessionId = payload.session_id;
           localStorage.setItem(sessionKey, sessionId);
+          const fallbackUsed = Boolean(payload.fallback);
+          const replyText = (payload.reply || '').trim();
           if (!payload.stream) {
             storeHistory(payload.history || []);
             renderHistory(payload.history || []);
             if (pendingAssistantEl) {
-              pendingAssistantEl.textContent = payload.reply || '';
+              pendingAssistantEl.textContent = replyText;
               pendingAssistantEl = null;
               streamTokenCount = 0;
+            }
+            if (fallbackUsed) {
+              statusEl.textContent = 'REST fallback reply received.';
             }
           } else {
             storeHistory(payload.history || []);
             if (pendingAssistantEl && payload.reply && streamTokenCount === 0) {
-              pendingAssistantEl.textContent = payload.reply;
+              pendingAssistantEl.textContent = replyText;
               pendingAssistantEl = null;
               streamTokenCount = 0;
               renderHistory(payload.history || []);
+              if (fallbackUsed) {
+                statusEl.textContent = 'REST fallback reply received.';
+              }
             }
           }
-          statusEl.textContent = '';
+          if (!fallbackUsed) {
+            statusEl.textContent = '';
+          }
           clearDebug();
         } catch (error) {
           if (debugEnabled) {
