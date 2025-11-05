@@ -8,6 +8,7 @@ and simple web-context caching for the optional web-aware mode.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -609,8 +610,12 @@ class YoBrain:
             )
             return None
 
+        chunk_size = int(os.environ.get("YO_CHUNK_SIZE", "800") or "800")
+        chunk_overlap = int(os.environ.get("YO_CHUNK_OVERLAP", "120") or "120")
+        chunk_size = max(200, min(chunk_size, 2000))
+        chunk_overlap = max(0, min(chunk_overlap, chunk_size // 2))
         try:
-            splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=120)
+            splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             chunks = splitter.split_documents(documents)
         except Exception as exc:
             self._logger.exception(

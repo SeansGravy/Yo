@@ -171,6 +171,7 @@
       let sessionId = localStorage.getItem(sessionKey) || null;
       let chatSocket = null;
       let pendingAssistantEl = null;
+      let streamTokenCount = 0;
 
       const messagesEl = document.getElementById('messages');
       const namespaceInput = document.getElementById('namespace-input');
@@ -246,6 +247,9 @@
           try { chatSocket.close(); } catch (error) { /* noop */ }
         }
         chatSocket = new WebSocket(wsUrl);
+        chatSocket.onopen = () => {
+          statusEl.textContent = '';
+        };
         chatSocket.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
@@ -264,14 +268,19 @@
           return;
         }
         switch (event.type) {
+          case 'chat_started':
+            statusEl.textContent = 'Streaming…';
+            break;
           case 'chat_token':
             if (!pendingAssistantEl) {
               pendingAssistantEl = appendAssistantBubble('');
             }
             pendingAssistantEl.textContent += event.token;
+            streamTokenCount += (event.token || '').length;
             break;
           case 'chat_complete':
             pendingAssistantEl = null;
+            streamTokenCount = 0;
             const history = event.history || [];
             storeHistory(history);
             renderHistory(history);
@@ -302,6 +311,7 @@
           connectChatStream();
           appendUserBubble(content);
           pendingAssistantEl = appendAssistantBubble('');
+          streamTokenCount = 0;
 
           const response = await fetch(chatUrl, {
             method: 'POST',
@@ -323,12 +333,27 @@
           if (!payload.stream) {
             storeHistory(payload.history || []);
             renderHistory(payload.history || []);
+            if (pendingAssistantEl) {
+              pendingAssistantEl.textContent = payload.reply || '';
+              pendingAssistantEl = null;
+              streamTokenCount = 0;
+            }
           } else {
             storeHistory(payload.history || []);
+            if (pendingAssistantEl && payload.reply && streamTokenCount === 0) {
+              pendingAssistantEl.textContent = payload.reply;
+              pendingAssistantEl = null;
+              streamTokenCount = 0;
+              renderHistory(payload.history || []);
+            }
           }
           statusEl.textContent = '';
         } catch (error) {
           statusEl.textContent = `❌ ${error}`;
+          if (pendingAssistantEl) {
+            pendingAssistantEl.textContent = String(error);
+            pendingAssistantEl = null;
+          }
         } finally {
           sendButton.disabled = false;
           messageInput.disabled = false;

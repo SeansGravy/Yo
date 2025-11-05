@@ -102,6 +102,19 @@ scripts/setup_yo_dev.sh
 - `yo health monitor [--json]` evaluates the most recent verification run, health score, and update cadence, writing results to `data/logs/health_monitor.jsonl`. A failing status exits with code 1 so CI or CRON jobs can alert immediately.
 - The hourly GitHub Actions workflow `.github/workflows/health-monitor.yml` runs the same command and uploads the JSONL log, giving the team a rolling audit of system freshness and pass rates.
 
+## 📈 Metrics & Analytics
+
+- `yo metrics summarize --since 24h` aggregates verification duration, pass rate, chat latency, and ingestion throughput from `data/logs/metrics.jsonl`. The Lite UI hits `/api/metrics` to populate the new Metrics panel automatically.
+- `yo analytics report --since 14d` surfaces CLI command frequency, chat sessions, and ingestion activity (respects `YO_ANALYTICS=off`). `/api/analytics` powers the dashboard Usage tab and returns JSON summaries for custom tooling.
+- Metrics and analytics refresh in real time on `/dashboard` and in `yo dashboard --live`, so you can keep an eye on trends without leaving the terminal.
+
+## 🤖 Self-Optimization
+
+- `yo optimize suggest` analyses recent metrics and analytics to recommend safe configuration tweaks (for example lowering chunk sizes when ingestion slows).
+- `yo optimize apply [--id <recommendation>]` writes approved tweaks into `.env`, logging every change to `data/logs/optimizer_history.jsonl`. Current actions include tuning `YO_CHUNK_SIZE` / `YO_CHUNK_OVERLAP` and forcing chat fallback via `YO_CHAT_STREAM_FALLBACK=force` when latency spikes.
+- Ingestion honours the new environment knobs automatically; reducing `YO_CHUNK_SIZE` decreases embedding payload size without requiring code edits.
+- `yo health report` now includes the top optimisation suggestions so operators know which action to take next.
+
 ## 🔐 Signature & Clone Verification
 
 - `yo verify signature [--json]` confirms the detached GPG signature in `data/logs/checksums/artifact_hashes.sig` matches the checksum file. Successful runs report the signer, version, and health metadata; JSON mode emits a machine-friendly payload for CI gates.
@@ -134,6 +147,7 @@ scripts/setup_yo_dev.sh
 - `yo chat --stream "Explain RAG"` prints tokens as soon as the model generates them; the web UI receives the same token events over `/ws/chat/<session>`.
 - `yo shell` launches an always-on developer console with history, auto-completion (when available), and shortcuts for `verify`, `telemetry analyze`, `deps check`, and more.
 - `/chat` in the Lite UI keeps a persistent message list, streams responses as they arrive, and remembers the current session via local storage.
+- The chat UI now falls back to the REST payload automatically if WebSocket streaming is interrupted, so the assistant bubble never blanks out mid-reply (`YO_CHAT_STREAM_FALLBACK=force` disables streaming entirely when needed).
 - Real-time dashboards now run over `/ws/updates`; `yo dashboard --live` brings those pulses to the terminal, `yo dashboard --events` streams the event feed, and `yo logs tail --type events` inspects the persisted history in `data/logs/sessions/events_*`.
 
 ## ⚙️ Testing

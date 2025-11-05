@@ -401,6 +401,28 @@ def test_handle_config_edit_uses_editor(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert calls == [["test-editor", str(env_path)]]
 
 
+def test_handle_chat_stream_outputs_tokens(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class StreamBrain:
+        active_namespace = "default"
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def chat_stream(self, **kwargs):
+            self.calls.append(kwargs)
+            yield {"token": "Hello", "done": False}
+            yield {"token": " world", "done": False}
+            yield {"token": "", "done": True, "response": "Hello world", "citations": []}
+
+    brain = StreamBrain()
+    args = argparse.Namespace(message=["ping"], ns=None, web=False, stream=True)
+    cli._handle_chat(args, brain)
+
+    output = capsys.readouterr().out
+    assert "Hello world" in output
+    assert brain.calls and brain.calls[0]["message"] == "ping"
+
+
 def test_handle_logs_tail_outputs_formatted_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     events_dir = tmp_path / "data/logs/sessions/events"
     events_dir.mkdir(parents=True, exist_ok=True)

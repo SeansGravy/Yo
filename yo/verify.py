@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Sequence
 
 from yo.telemetry import build_telemetry_summary
+from yo.metrics import record_metric
 
 
 SUMMARY_LINE_PATTERN = re.compile(r"=+ (.+) =+")
@@ -202,6 +203,15 @@ def write_test_summary(result: str = "✅ Verify successful", **extra: Any) -> D
     _append_history(summary)
     _write_badge(summary)
     build_telemetry_summary()
+    record_metric(
+        "verify",
+        status=summary.get("status"),
+        duration_seconds=summary.get("duration_seconds"),
+        pass_rate=summary.get("pass_rate"),
+        tests_total=summary.get("tests_total"),
+        tests_passed=summary.get("tests_passed"),
+        tests_failed=summary.get("tests_failed"),
+    )
     print(f"[Yo] Test summary written: {summary['timestamp']} -> {summary_path}")
     return summary
 

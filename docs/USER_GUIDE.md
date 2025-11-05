@@ -137,6 +137,7 @@ python3 -m yo.cli chat --stream "Explain vector search" --ns research
 * `--stream` streams tokens as the response is generated—ideal for long answers or demonstrations.
 * Rich citations (when available) print beneath each reply so you can trace the source documents quickly.
 * The new `/chat` web workspace mirrors the CLI: sessions persist in local storage and token events arrive live via WebSockets.
+* If a WebSocket hiccups mid-stream, the UI falls back to the REST reply automatically so you still see the full answer. Set `YO_CHAT_STREAM_FALLBACK=force` to always return full replies without streaming tokens.
 
 ### 4.4 `summarize` — Summarize a namespace
 
@@ -172,6 +173,7 @@ python3 -m yo.cli config reset --ns research
 * `set <key> <value>` persists a change. Without `--ns` the setting is stored in `.env`. With `--ns` the override is written to `data/namespace_meta.json` beside ingestion metrics.
 * `reset [key]` removes overrides globally or for a namespace so YoBrain falls back to defaults (`ollama:llama3` and `ollama:nomic-embed-text`).
 * `.env.example` lists recognised variables (`YO_MODEL`, `YO_EMBED_MODEL`, `YO_NAMESPACE`, `YO_DB_URI`, `YO_DATA_DIR`, and optional cloud API keys). Copy it to `.env` to pin local defaults.
+* Advanced tuning knobs are exposed via `.env`: `YO_CHUNK_SIZE` / `YO_CHUNK_OVERLAP` alter ingestion chunking behaviour, while `YO_CHAT_STREAM_FALLBACK` controls whether chat replies stream (`auto`/`off`) or return full responses immediately (`force`).
 
 ### 4.7 `cache` — Inspect or clear web cache
 
@@ -291,7 +293,40 @@ python3 -m yo.cli health monitor --json
 * `monitor` enforces freshness thresholds (pass rate ≥ 95 %, latest run < 24 h old), appends results to `data/logs/health_monitor.jsonl`, and exits with a non-zero status on failure so CI can alert operators.
 * The scheduled workflow `.github/workflows/health-monitor.yml` runs hourly, uploads the JSONL log as an artifact, and publishes the most recent monitor result in the Actions step summary.
 
-### 4.18 `report audit` — Generate compliance reports
+### 4.18 `metrics` — Summarise collected metrics
+
+```bash
+python3 -m yo.cli metrics summarize
+python3 -m yo.cli metrics summarize --since 24h --json
+```
+
+* Aggregates verification duration, pass rate, chat latency, and ingestion throughput from `data/logs/metrics.jsonl`.
+* Use `--since` with windows such as `30m`, `24h`, or `7d` to focus on recent behaviour.
+* The `/api/metrics` endpoint powers the dashboard metrics panel and returns machine-readable JSON for automation.
+
+### 4.19 `analytics` — Inspect anonymised usage
+
+```bash
+python3 -m yo.cli analytics report
+python3 -m yo.cli analytics report --since 14d --json
+```
+
+* Summarises CLI command usage, chat sessions, and ingestion runs based on `data/logs/analytics.jsonl`.
+* Respects `YO_ANALYTICS=off`; set the environment variable to disable tracking entirely.
+* `/api/analytics` feeds the dashboard Usage tab so teams can monitor adoption at a glance.
+
+### 4.20 `optimize` — Self-tune configuration
+
+```bash
+python3 -m yo.cli optimize suggest
+python3 -m yo.cli optimize apply --id ingest_chunk_tuning
+```
+
+* `suggest` analyses metrics/analytics to propose safe tweaks (for example lowering chunk size when ingestion slows or forcing chat fallback when latency spikes).
+* `apply` writes approved environment updates to `.env` and records every action in `data/logs/optimizer_history.jsonl`.
+* Recommendations also appear in `yo health report` and on the dashboard, keeping operators informed about next steps.
+
+### 4.21 `report audit` — Generate compliance reports
 
 ```bash
 python3 -m yo.cli report audit
@@ -304,7 +339,7 @@ python3 -m yo.cli report audit --md --html
 * Each report includes namespace metrics, dependency drift, lifecycle history, snapshots, and recent test outcomes.
 * CI copies the Markdown to `docs/RELEASE_NOTES.md` and publishes the HTML copy at `docs/latest.html` for GitHub Pages.
 
-### 4.19 `system` — Lifecycle tooling
+### 4.22 `system` — Lifecycle tooling
 
 ```bash
 python3 -m yo.cli system clean --dry-run
@@ -318,7 +353,7 @@ python3 -m yo.cli system restore data/snapshots/rc_candidate.tar.gz
 * `snapshot` archives configuration, telemetry, and logs alongside hash metadata.
 * `restore` safely unpacks snapshots (with path validation) and logs the event to `data/logs/lifecycle_history.json`.
 
-### 4.20 `logs` — Tail persistent history
+### 4.23 `logs` — Tail persistent history
 
 ```bash
 python3 -m yo.cli logs tail --type events
@@ -329,7 +364,7 @@ python3 -m yo.cli logs tail --type chat --json --lines 5
 * `tail` picks the most recent log of the requested type (`events`, `chat`, or `shell`) and prints a formatted summary; `--json` returns the raw lines for automation.
 * Combine with `yo dashboard --events` for a live stream, then fall back to `yo logs tail` when you need to inspect historical context or triage CI failures.
 
-### 4.21 `help` — Discover commands and aliases
+### 4.24 `help` — Discover commands and aliases
 
 ```bash
 python3 -m yo.cli help
@@ -342,7 +377,7 @@ python3 -m yo.cli h     # alias for `yo health report`
 * Subcommand help surfaces nested actions like `namespace stats` and `namespace drift`.
 * Aliases keep workflows fast; Rich-based color output is bundled via `requirements.txt`.
 
-### 4.22 `shell` — Interactive developer REPL
+### 4.25 `shell` — Interactive developer REPL
 
 ```bash
 python3 -m yo.cli shell

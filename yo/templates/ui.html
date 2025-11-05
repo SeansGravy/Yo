@@ -200,6 +200,14 @@
       <div id="health-summary" class="health-summary">Loading…</div>
     </section>
     <section>
+      <h2>Metrics</h2>
+      <div id="metrics-summary">Metrics loading…</div>
+    </section>
+    <section>
+      <h2>Usage Analytics</h2>
+      <div id="usage-summary">Analytics loading…</div>
+    </section>
+    <section>
       <h2>Signed Verification</h2>
       <div id="verification-summary">No signed verification recorded yet.</div>
     </section>
@@ -222,6 +230,10 @@
     <section>
       <h2>Live Events</h2>
       <ul id="event-feed"></ul>
+    </section>
+    <section>
+      <h2>Optimizer Suggestions</h2>
+      <div id="optimizer-summary">Gathering recommendations…</div>
     </section>
     <section>
       <h2>Namespaces</h2>
@@ -263,6 +275,9 @@
     </section>
     <script>
       const statusUrl = '/api/status';
+      const metricsUrl = '/api/metrics';
+      const analyticsUrl = '/api/analytics';
+      const optimizeUrl = '/api/optimize';
       const ingestUrl = '/api/ingest';
       const eventsUrl = '/ws/events';
       let refreshTimer = null;
@@ -361,6 +376,84 @@
           <p><strong>Last Verify:</strong> ${status}</p>
           <p><strong>Updated:</strong> ${timestamp}</p>
         `;
+      }
+
+      function renderMetrics(summary) {
+        const container = document.getElementById('metrics-summary');
+        if (!container) return;
+        if (!summary || !summary.types || Object.keys(summary.types).length === 0) {
+          container.textContent = 'No metrics recorded yet. Run verification or ingestion to collect samples.';
+          return;
+        }
+        const list = document.createElement('ul');
+        list.className = 'status-list';
+        for (const [metric, info] of Object.entries(summary.types)) {
+          const fields = info.fields || {};
+          const parts = [];
+          for (const [field, stats] of Object.entries(fields)) {
+            if (stats.avg !== null && stats.avg !== undefined) {
+              parts.push(`${field}: ${Number(stats.avg).toFixed(2)}`);
+            }
+          }
+          const item = document.createElement('li');
+          const detail = parts.length ? ` — ${parts.join(', ')}` : '';
+          item.textContent = `${metric} (${info.count} samples)${detail}`;
+          list.appendChild(item);
+        }
+        container.innerHTML = '';
+        container.appendChild(list);
+      }
+
+      function renderUsage(summary) {
+        const container = document.getElementById('usage-summary');
+        if (!container) return;
+        if (!summary || !summary.total) {
+          container.textContent = summary && summary.enabled === false
+            ? 'Analytics disabled (set YO_ANALYTICS=on to enable tracking).'
+            : 'No usage events recorded yet.';
+          return;
+        }
+        const fragments = [];
+        const commands = summary.commands || [];
+        if (commands.length) {
+          fragments.push(`<strong>Commands:</strong> ${commands.slice(0, 4).map(([cmd, count]) => `${cmd} (${count})`).join(', ')}`);
+        }
+        const chat = summary.chat || {};
+        if (chat.total_sessions) {
+          const latency = chat.avg_latency_seconds !== null && chat.avg_latency_seconds !== undefined
+            ? `${Number(chat.avg_latency_seconds).toFixed(2)}s`
+            : 'n/a';
+          fragments.push(`<strong>Chat:</strong> ${chat.total_sessions} sessions · Avg latency ${latency}`);
+        }
+        const ingest = summary.ingest || {};
+        if (ingest.total_runs) {
+          const avg = ingest.avg_duration_seconds !== null && ingest.avg_duration_seconds !== undefined
+            ? `${Number(ingest.avg_duration_seconds).toFixed(2)}s`
+            : 'n/a';
+          fragments.push(`<strong>Ingestion:</strong> ${ingest.total_runs} runs · Avg duration ${avg}`);
+        }
+        container.innerHTML = fragments.length ? fragments.map((line) => `<p>${line}</p>`).join('') : 'Usage data not available yet.';
+      }
+
+      function renderOptimizer(snapshot) {
+        const container = document.getElementById('optimizer-summary');
+        if (!container) return;
+        const recommendations = snapshot && Array.isArray(snapshot.recommendations) ? snapshot.recommendations : [];
+        if (!recommendations.length) {
+          container.textContent = 'No optimisation suggestions at the moment.';
+          return;
+        }
+        const list = document.createElement('ul');
+        list.className = 'status-list';
+        for (const rec of recommendations.slice(0, 3)) {
+          const item = document.createElement('li');
+          const title = rec.title || rec.id || 'Recommendation';
+          const detail = rec.detail ? ` — ${rec.detail}` : '';
+          item.textContent = `${title}${detail}`;
+          list.appendChild(item);
+        }
+        container.innerHTML = '';
+        container.appendChild(list);
       }
 
       function renderVerification(verification) {
@@ -507,6 +600,28 @@
         }
       }
 
+      async function refreshMetrics() {
+        try {
+          const response = await fetch(`${metricsUrl}?since=7d`, { cache: 'no-store' });
+          const data = await response.json();
+          renderMetrics(data);
+        } catch (error) {
+          const container = document.getElementById('metrics-summary');
+          if (container) container.textContent = `Unable to load metrics: ${error}`;
+        }
+      }
+
+      async function refreshAnalytics() {
+        try {
+          const response = await fetch(`${analyticsUrl}?since=14d`, { cache: 'no-store' });
+          const data = await response.json();
+          renderUsage(data);
+        } catch (error) {
+          const container = document.getElementById('usage-summary');
+          if (container) container.textContent = `Unable to load analytics: ${error}`;
+        }
+      }
+
       async function refreshStatus() {
         try {
           const response = await fetch(statusUrl, { cache: 'no-store' });
@@ -516,11 +631,14 @@
           renderVerification(data.verification);
           renderReleases(data.releases);
           renderNamespaces(data.namespaces, data.drift_window);
+          renderOptimizer(data.optimizer);
           updateIngestionState(data.ingestion);
           updateWarningBanner(data.warning);
         } catch (error) {
           updateWarningBanner('Unable to load status: ' + error);
         }
+        refreshMetrics();
+        refreshAnalytics();
       }
 
       document.getElementById('refresh-button').addEventListener('click', refreshStatus);
@@ -588,6 +706,9 @@
             renderNamespaces(data.namespaces, data.drift_window);
             updateIngestionState(data.ingestion);
             updateWarningBanner(data.warning);
+            renderOptimizer(data.optimizer);
+            refreshMetrics();
+            refreshAnalytics();
           } catch (error) {
             console.error('Failed to parse update payload', error);
           }

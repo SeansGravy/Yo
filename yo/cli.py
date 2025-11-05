@@ -64,6 +64,9 @@ from yo.system_tools import (
 from yo import recovery
 from yo.chat import CHAT_DAILY_DIR
 from yo.events import EVENT_LOG_DIR, publish_event
+from yo.metrics import summarize_since, parse_since_window, record_metric
+from yo.analytics import analytics_enabled, load_analytics, record_cli_command, summarize_usage
+from yo.optimizer import generate_recommendations, apply_recommendations
 
 try:  # pragma: no cover - optional dependency
     from rich.console import Console
@@ -246,6 +249,9 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "telemetry": "Telemetry",
     "explain": "Telemetry",
     "dashboard": "Insights",
+    "metrics": "Insights",
+    "analytics": "Insights",
+    "optimize": "Insights",
     "cache": "Utilities",
     "compact": "Maintenance",
     "package": "Release",
@@ -1226,6 +1232,14 @@ def _run_health_monitor(json_output: bool) -> None:
         pass
     result["log_path"] = str(monitor_path)
 
+    record_metric(
+        "health",
+        status=status,
+        pass_rate=result.get("pass_rate"),
+        hours_since_last_run=result.get("hours_since_last_run"),
+        health_score=result.get("health_score"),
+    )
+
     if json_output:
         print(json.dumps(result, indent=2))
     else:
@@ -1270,6 +1284,9 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
         "dependency_events": dependency_events,
     }
 
+    recommendations = generate_recommendations()
+    payload["recommendations"] = recommendations
+
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2))
         return
@@ -1303,6 +1320,17 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
             print(f"   • {event.get('timestamp')}: {event.get('action')} ({packages})")
     else:
         print("\nRecent dependency activity: none recorded")
+
+    if recommendations:
+        print("\nOptimisation suggestions:")
+        for rec in recommendations[:3]:
+            title = rec.get("title", rec.get("id", "recommendation"))
+            detail = rec.get("detail")
+            print(f"   • {title}")
+            if detail:
+                print(f"     {detail}")
+    else:
+        print("\nOptimisation suggestions: none")
 
 
 def _handle_explain_verify(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -1724,6 +1752,159 @@ def _handle_logs_tail(args: argparse.Namespace, __: YoBrain | None = None) -> No
         print(f"   • {line}")
 
 
+def _format_metric_value(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.2f}"
+
+
+def _handle_metrics_summarize(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    window = getattr(args, "since", None)
+    try:
+        summary = summarize_since(window)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --since value: {exc}") from exc
+
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2))
+        return
+
+    print(f"📈 Metrics summary (window: {summary.get('window', 'all')})")
+    print(f"Samples recorded: {summary.get('total', 0)}")
+    print()
+    for metric_type, info in summary.get("types", {}).items():
+        print(f"[{metric_type}] {info.get('count', 0)} samples")
+        fields = info.get("fields", {})
+        if fields:
+            for field, stats in fields.items():
+                avg = _format_metric_value(stats.get("avg"))
+                min_val = _format_metric_value(stats.get("min"))
+                max_val = _format_metric_value(stats.get("max"))
+                count = stats.get("count", 0)
+                print(f"   • {field}: avg={avg} min={min_val} max={max_val} (n={count})")
+        latest = info.get("latest") or {}
+        if latest:
+            timestamp = latest.get("timestamp", "unknown")
+            print(f"     Latest sample: {timestamp}")
+        print()
+
+
+def _handle_analytics_report(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    window = getattr(args, "since", None)
+    try:
+        since_delta = parse_since_window(window) if window else None
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --since value: {exc}") from exc
+
+    entries = load_analytics(since=since_delta)
+    summary = summarize_usage(entries)
+    summary["window"] = window or "all"
+    summary["enabled"] = analytics_enabled()
+
+    if getattr(args, "json", False):
+        print(json.dumps(summary, indent=2))
+        return
+
+    if not analytics_enabled():
+        print("⚠️  Analytics disabled (set YO_ANALYTICS=on to enable tracking).")
+    print(f"🧭 Usage analytics (window: {summary['window']}, total samples: {summary.get('total', 0)})\n")
+
+    commands = summary.get("commands") or []
+    if commands:
+        print("Commands:")
+        for command, count in commands[:10]:
+            print(f"   • {command}: {count}")
+        print()
+    namespaces = summary.get("namespaces") or []
+    if namespaces:
+        print("Namespaces touched:")
+        for namespace, count in namespaces[:10]:
+            print(f"   • {namespace}: {count}")
+        print()
+
+    chat_info = summary.get("chat") or {}
+    if chat_info.get("total_sessions"):
+        avg_latency = chat_info.get("avg_latency_seconds")
+        avg_tokens = chat_info.get("avg_tokens")
+        print("Chat sessions:")
+        print(f"   • Total sessions: {chat_info['total_sessions']}")
+        if avg_latency is not None:
+            print(f"   • Avg latency: {avg_latency:.2f}s")
+        if avg_tokens is not None:
+            print(f"   • Avg tokens: {avg_tokens:.0f}")
+        by_ns = chat_info.get("by_namespace") or []
+        if by_ns:
+            print(f"   • Sessions by namespace: {', '.join(f'{ns} ({count})' for ns, count in by_ns[:5])}")
+        print()
+
+    ingest_info = summary.get("ingest") or {}
+    if ingest_info.get("total_runs"):
+        avg_duration = ingest_info.get("avg_duration_seconds")
+        print("Ingestion runs:")
+        print(f"   • Total runs: {ingest_info['total_runs']}")
+        if avg_duration is not None:
+            print(f"   • Avg duration: {avg_duration:.2f}s")
+        by_ns = ingest_info.get("by_namespace") or []
+        if by_ns:
+            print(f"   • Runs by namespace: {', '.join(f'{ns} ({count})' for ns, count in by_ns[:5])}")
+        print()
+
+
+def _handle_optimize_suggest(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    recommendations = generate_recommendations()
+    if getattr(args, "json", False):
+        print(json.dumps({"recommendations": recommendations}, indent=2))
+        return
+    if not recommendations:
+        print("ℹ️  No optimisation recommendations at this time.")
+        return
+
+    print("🛠️  Optimisation suggestions:\n")
+    for rec in recommendations:
+        print(f"- {rec.get('title', rec.get('id', 'recommendation'))}")
+        detail = rec.get("detail")
+        if detail:
+            print(f"    {detail}")
+        if rec.get("action") != "env_update" and rec.get("next_steps"):
+            next_steps = rec["next_steps"]
+            if isinstance(next_steps, list):
+                for step in next_steps:
+                    print(f"    → {step}")
+        print()
+
+
+def _handle_optimize_apply(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    selections = generate_recommendations()
+    ids = getattr(args, "ids", None)
+    if ids:
+        selections = [rec for rec in selections if rec.get("id") in ids]
+    if not selections:
+        print("ℹ️  No matching recommendations found.")
+        return
+
+    auto_recs = [rec for rec in selections if rec.get("action") == "env_update"]
+    manual_recs = [rec for rec in selections if rec.get("action") != "env_update"]
+
+    applied = apply_recommendations(auto_recs, auto_only=False)
+    if applied:
+        print("✅ Applied configuration updates:")
+        for entry in applied:
+            applied_env = entry.get("applied", {})
+            for key, value in applied_env.items():
+                print(f"   • {key}={value}")
+    else:
+        print("ℹ️  No automatic optimisations were applied.")
+
+    if manual_recs:
+        print("\nManual follow-ups required:")
+        for rec in manual_recs:
+            print(f" - {rec.get('title', rec.get('id', 'manual'))}")
+            detail = rec.get("detail")
+            if detail:
+                print(f"     {detail}")
+            steps = rec.get("next_steps") or []
+            for step in steps:
+                print(f"     → {step}")
 def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> None:
     ledger_path = Path("data/logs/verification_ledger.jsonl")
     if not ledger_path.exists():
@@ -2323,6 +2504,30 @@ def build_parser() -> argparse.ArgumentParser:
     logs_tail.add_argument("--json", action="store_true", help="Output raw JSON payload")
     logs_tail.set_defaults(handler=_handle_logs_tail)
 
+    metrics_parser = _add_top_level("metrics", help_text="Summarise recorded metrics", category="Insights")
+    metrics_sub = metrics_parser.add_subparsers(dest="metrics_command", required=True)
+    metrics_summary = metrics_sub.add_parser("summarize", help="Summarize collected metrics", description="Summarize metrics window")
+    metrics_summary.add_argument("--since", help="Time window (e.g., 24h, 7d)")
+    metrics_summary.add_argument("--json", action="store_true", help="Output summary as JSON")
+    metrics_summary.set_defaults(handler=_handle_metrics_summarize)
+
+    analytics_parser = _add_top_level("analytics", help_text="Usage analytics overview", category="Insights")
+    analytics_sub = analytics_parser.add_subparsers(dest="analytics_command", required=True)
+    analytics_report = analytics_sub.add_parser("report", help="Summarize usage analytics", description="Summarize usage analytics")
+    analytics_report.add_argument("--since", help="Time window (e.g., 30d)")
+    analytics_report.add_argument("--json", action="store_true", help="Output analytics as JSON")
+    analytics_report.set_defaults(handler=_handle_analytics_report)
+
+    optimize_parser = _add_top_level("optimize", help_text="Self-optimization helpers", category="Insights")
+    optimize_sub = optimize_parser.add_subparsers(dest="optimize_command", required=True)
+    optimize_suggest = optimize_sub.add_parser("suggest", help="List current optimisation recommendations", description="List optimisation suggestions")
+    optimize_suggest.add_argument("--json", action="store_true", help="Output recommendations as JSON")
+    optimize_suggest.set_defaults(handler=_handle_optimize_suggest)
+    optimize_apply = optimize_sub.add_parser("apply", help="Apply automatic recommendations", description="Apply optimisation recommendations")
+    optimize_apply.add_argument("--id", dest="ids", action="append", help="Recommendation id to apply (may repeat)")
+    optimize_apply.add_argument("--include-manual", action="store_true", help="Include manual recommendations in output")
+    optimize_apply.set_defaults(handler=_handle_optimize_apply)
+
     health_parser = _add_top_level("health", help_text="Overall system health insights", category="Insights")
     health_parser.add_argument("action", nargs="?", default="report", help=argparse.SUPPRESS)
     health_parser.add_argument("--json", action="store_true", help="Output report as JSON")
@@ -2485,11 +2690,41 @@ def main() -> None:
         ns_override = getattr(args, "ns", None)
         brain = YoBrain(namespace=ns_override)
 
+    command_name = getattr(args, "command", "unknown")
+    start_time = time.perf_counter()
+    success = True
     try:
         handler(args, brain)
     except ValueError as exc:
+        success = False
         print(f"❌ {exc}")
         raise SystemExit(1) from exc
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 0
+        if code not in (0, None):
+            success = False
+        raise
+    finally:
+        duration = time.perf_counter() - start_time
+        try:
+            namespace = getattr(args, "ns", None)
+            if not namespace and brain and getattr(brain, "active_namespace", None):
+                namespace = brain.active_namespace
+            flags: Dict[str, Any] = {}
+            for field in ("stream", "web", "json", "release", "action", "since"):
+                if hasattr(args, field):
+                    value = getattr(args, field)
+                    if isinstance(value, (str, int, bool)):
+                        flags[field] = value
+            record_cli_command(
+                command_name,
+                duration_seconds=duration,
+                namespace=namespace,
+                success=success,
+                flags=flags or None,
+            )
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

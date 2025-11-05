@@ -24,6 +24,14 @@ from yo.chat import ChatSessionStore
 from yo.config import get_config, update_config_value
 from yo.events import get_event_bus, publish_event
 from yo.logging_utils import get_logger
+from yo.metrics import summarize_since, record_metric, parse_since_window
+from yo.analytics import (
+    analytics_enabled,
+    load_analytics,
+    record_chat_interaction,
+    record_ingest_event,
+    summarize_usage,
+)
 from yo.telemetry import (
     build_telemetry_summary,
     compute_trend,
@@ -40,6 +48,7 @@ from yo.release import (
     verify_integrity_manifest,
 )
 from yo.websocket import UpdateBroadcaster
+from yo.optimizer import generate_recommendations, apply_recommendations
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -80,6 +89,10 @@ class ConfigUpdateRequest(BaseModel):
     key: str
     value: str
     namespace: str | None = None
+
+class OptimizeApplyRequest(BaseModel):
+    ids: list[str] | None = None
+    auto_only: bool = True
 
 
 event_bus = get_event_bus()
@@ -127,6 +140,14 @@ def _build_success_response(
     summary.setdefault("documents_ingested", 0)
     summary.setdefault("chunks_ingested", 0)
     summary.setdefault("duration_seconds", round(duration, 3))
+
+    record_metric("ingest", **summary)
+    record_ingest_event(
+        namespace=namespace,
+        documents=summary["documents_ingested"],
+        chunks=summary["chunks_ingested"],
+        duration_seconds=summary["duration_seconds"],
+    )
 
     payload: dict[str, Any] = {
         "status": "ok",
@@ -380,6 +401,9 @@ def build_status_payload() -> dict[str, Any]:
         "release": release_info,
         "releases": releases_list,
     }
+    payload["optimizer"] = {
+        "recommendations": generate_recommendations()[:3],
+    }
     return payload
 
 
@@ -388,6 +412,43 @@ def api_status() -> JSONResponse:
     """Return backend availability and namespace insights for the Lite UI."""
 
     return JSONResponse(content=build_status_payload())
+
+
+@app.get("/api/metrics", response_class=JSONResponse)
+def api_metrics(since: str | None = None) -> JSONResponse:
+    try:
+        summary = summarize_since(since)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(content=summary)
+
+
+@app.get("/api/analytics", response_class=JSONResponse)
+def api_analytics_endpoint(since: str | None = None) -> JSONResponse:
+    try:
+        window = parse_since_window(since) if since else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    entries = load_analytics(since=window)
+    summary = summarize_usage(entries)
+    summary["window"] = since or "all"
+    summary["enabled"] = analytics_enabled()
+    return JSONResponse(content=summary)
+
+
+@app.get("/api/optimize", response_class=JSONResponse)
+def api_optimize() -> JSONResponse:
+    recommendations = generate_recommendations()
+    return JSONResponse(content={"recommendations": recommendations})
+
+
+@app.post("/api/optimize/apply", response_class=JSONResponse)
+async def api_optimize_apply(payload: OptimizeApplyRequest) -> JSONResponse:
+    recommendations = generate_recommendations()
+    if payload.ids:
+        recommendations = [rec for rec in recommendations if rec.get("id") in payload.ids]
+    applied = apply_recommendations(recommendations, auto_only=payload.auto_only)
+    return JSONResponse(content={"applied": applied, "requested": payload.ids or []})
 
 
 @app.websocket("/ws/updates")
@@ -496,8 +557,16 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"YoBrain unavailable: {exc}") from exc
 
+    stream_mode = os.environ.get("YO_CHAT_STREAM_FALLBACK", "auto").lower()
+    stream_requested = payload.stream
+    if stream_mode == "force":
+        stream_requested = False
+    elif stream_mode == "off":
+        stream_requested = True
+
+    started = time.perf_counter()
     try:
-        if payload.stream:
+        if stream_requested:
             session_id, reply, history, metadata = chat_store.stream(
                 brain=brain,
                 namespace=namespace,
@@ -516,6 +585,26 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    latency = time.perf_counter() - started
+    reply_text = reply or ""
+
+    record_metric(
+        "chat",
+        namespace=namespace,
+        latency_seconds=round(latency, 3),
+        tokens=len(reply_text),
+        stream=stream_requested,
+        history_length=len(history),
+    )
+    record_chat_interaction(
+        session_id,
+        namespace=namespace,
+        latency_seconds=latency,
+        tokens=len(reply_text),
+        stream=stream_requested,
+        history_length=len(history),
+    )
+
     response_payload = {
         "session_id": session_id,
         "reply": reply,
@@ -523,7 +612,7 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         "history": history,
         "context": metadata.get("context"),
         "citations": metadata.get("citations", []),
-        "stream": payload.stream,
+        "stream": stream_requested,
     }
     return JSONResponse(content=response_payload)
 
