@@ -1183,6 +1183,7 @@ class YoBrain:
 
         payload: dict[str, Any] = {
             "response": reply_text,
+            "reply": {"text": reply_text},
             "context": memory_context,
             "citations": citations,
         }
