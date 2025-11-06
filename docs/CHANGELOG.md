@@ -1,5 +1,11 @@
 # Yo Changelog
 
+## v0.5.9.1 — November 6, 2025
+- Added Ollama self-healing supervisor and CLI monitor command.
+- Implemented stream reconnect logic with exponential backoff and telemetry.
+- Extended health telemetry with restart metrics and drop rates.
+- Introduced `yo health ollama` for real-time daemon status.
+
 ## v0.5.9.0 — November 5, 2025
 - Finalized real-time streaming relay via async Ollama client
 - Added telemetry (token counts, latency, version tagging)

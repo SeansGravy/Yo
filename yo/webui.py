@@ -31,6 +31,7 @@ from yo.events import get_event_bus, publish_event
 from yo.logging_utils import get_logger
 from yo import __version__
 from yo.metrics import summarize_since, record_metric, parse_since_window, load_metrics
+from yo.monitor_ollama import load_stats as load_ollama_stats
 from yo.analytics import (
     analytics_enabled,
     load_analytics,
@@ -450,13 +451,23 @@ async def api_health_chat() -> JSONResponse:
         for entry in latency_entries
         if isinstance(entry.get("value"), (int, float))
     ]
-    avg_latency = int(round(sum(latency_values) / len(latency_values))) if latency_values else 0
+    avg_stream_latency = int(round(sum(latency_values) / len(latency_values))) if latency_values else 0
+
+    drop_entries = [entry for entry in metrics if entry.get("type") == "stream_drops"]
+    drop_count = len(drop_entries)
+    stream_drop_rate = round(drop_count / total_success, 3) if total_success else 0.0
+
+    ollama_stats = load_ollama_stats()
 
     payload = {
         "status": "ok",
         "version": __version__,
         "stream_rate": stream_rate,
-        "avg_latency": avg_latency,
+        "avg_latency": avg_stream_latency,
+        "avg_stream_latency_ms": avg_stream_latency,
+        "stream_drop_rate": stream_drop_rate,
+        "ollama_healthy": ollama_stats.healthy,
+        "restart_count": ollama_stats.restart_count,
     }
     return JSONResponse(content=payload, status_code=200)
 

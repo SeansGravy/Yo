@@ -5,4 +5,4 @@ import yo
 
 def test_version_constant() -> None:
     assert hasattr(yo, "__version__")
-    assert yo.__version__ == "0.5.9.0"
+    assert yo.__version__ == "0.5.9.1"

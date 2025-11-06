@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from yo.logging_utils import get_logger
+from yo.metrics import load_metrics
 
 LOGGER = get_logger(__name__)
 
@@ -179,6 +180,29 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
 
     total_chat_sessions = sum(chat_sessions.values())
 
+    metrics_entries = load_metrics()
+    ping_latencies = [
+        float(entry["value"])
+        for entry in metrics_entries
+        if entry.get("type") == "ollama_ping_latency_ms" and isinstance(entry.get("value"), (int, float))
+    ]
+    ping_failures = [entry for entry in metrics_entries if entry.get("type") == "ollama_ping_failure"]
+    restart_events = [entry for entry in metrics_entries if entry.get("type") == "ollama_restart"]
+    stream_drop_events = [entry for entry in metrics_entries if entry.get("type") == "stream_drops"]
+    stream_success_events = [entry for entry in metrics_entries if entry.get("type") == "chat_stream_success"]
+    stream_latency_values = [
+        float(entry["value"])
+        for entry in metrics_entries
+        if entry.get("type") == "chat_stream_latency_ms" and isinstance(entry.get("value"), (int, float))
+    ]
+
+    total_pings = len(ping_latencies) + len(ping_failures)
+    uptime_ratio = None if total_pings == 0 else len(ping_latencies) / total_pings
+    stream_drop_rate = None
+    if stream_success_events:
+        drop_total = len(stream_drop_events)
+        stream_drop_rate = drop_total / len(stream_success_events)
+
     return {
         "commands": commands.most_common(),
         "namespaces": namespaces.most_common(),
@@ -196,6 +220,17 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
             "total_runs": sum(ingest_counts.values()),
             "by_namespace": ingest_counts.most_common(),
             "avg_duration_seconds": _average(ingest_duration),
+        },
+        "resilience": {
+            "ollama": {
+                "restart_count": len(restart_events),
+                "uptime_ratio": uptime_ratio,
+                "avg_ping_latency_ms": _average(ping_latencies),
+            },
+            "stream": {
+                "drop_rate": stream_drop_rate,
+                "avg_latency_ms": _average(stream_latency_values),
+            },
         },
         "total": len(entries),
     }

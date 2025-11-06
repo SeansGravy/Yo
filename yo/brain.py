@@ -23,7 +23,14 @@ from typing import Any, Dict, List, Optional, Tuple, NoReturn
 
 from yo.logging_utils import get_logger
 from yo.config import Config as YoConfig, get_config
-from yo.backends import select_model, run_ollama_chat, stream_ollama_chat
+from yo.backends import (
+    select_model,
+    run_ollama_chat,
+    stream_ollama_chat,
+    OllamaStreamTimeout,
+    OllamaStreamError,
+)
+from yo.metrics import record_metric
 from yo import __version__
 
 try:  # pragma: no cover - dependency presence is validated in tests
@@ -1405,30 +1412,67 @@ class YoBrain:
 
         tokens: list[str] = []
         error_detail: Exception | None = None
-        try:
-            async for chunk in stream_ollama_chat(
-                self.model_name,
-                prompt,
-                timeout=stream_timeout,
-            ):
-                token = str(chunk)
-                if token:
-                    tokens.append(token)
-                    yield {"token": token, "done": False}
-        except Exception as exc:  # pragma: no cover - defensive path
-            error_detail = exc
-            self._logger.warning(
-                "chat_stream_async error namespace=%s preview=%s: %s",
-                namespace,
-                preview,
-                exc,
-            )
+        drop_occurred = False
+        reconnect_attempts = 0
+        delays = [1.0, 3.0, 5.0]
+        max_attempts = 1 + len(delays)
+        attempt_index = 0
 
-        if not tokens:
+        while attempt_index < max_attempts:
+            try:
+                async for chunk in stream_ollama_chat(
+                    self.model_name,
+                    prompt,
+                    timeout=stream_timeout,
+                    silence_timeout=5.0,
+                ):
+                    token = str(chunk)
+                    if token:
+                        tokens.append(token)
+                        yield {"token": token, "done": False}
+                error_detail = None
+                break
+            except OllamaStreamTimeout as exc:
+                record_metric("stream_timeout", value=1)
+                error_detail = exc
+            except OllamaStreamError as exc:  # pragma: no cover - defensive path
+                error_detail = exc
+            attempt_index += 1
+            if attempt_index >= max_attempts or tokens:
+                drop_occurred = True
+                break
+            reconnect_attempts += 1
+            record_metric("stream_reconnect_attempts", value=reconnect_attempts)
+            delay = delays[min(attempt_index - 1, len(delays) - 1)]
+            self._logger.warning(
+                "chat_stream_async retry namespace=%s attempt=%d delay=%.1fs reason=%s",
+                namespace,
+                attempt_index,
+                delay,
+                error_detail,
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        if reconnect_attempts and not drop_occurred:
+            self._logger.info(
+                "chat_stream_async recovered after %d reconnect attempt(s) namespace=%s",
+                reconnect_attempts,
+                namespace,
+            )
+            record_metric("stream_reconnect_attempts", value=reconnect_attempts)
+
+        if not tokens and not drop_occurred:
             self._logger.warning("chat_stream_async produced no tokens namespace=%s preview=%s", namespace, preview)
 
         reply = "".join(tokens).strip()
-        if not reply:
+        if drop_occurred:
+            record_metric("stream_drops", value=1)
+            if reply:
+                reply = f"{reply}\n\n(Stream connection dropped — attempting recovery...)"
+            else:
+                reply = "(Stream connection dropped — attempting recovery...)"
+        elif not reply:
             if error_detail is not None:
                 reply = "(model stream error)"
             else:

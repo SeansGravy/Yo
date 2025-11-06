@@ -14,6 +14,10 @@ def test_chat_health_endpoint_returns_ok(monkeypatch) -> None:
 
     payload = response.json()
     assert payload["status"] == "ok"
-    assert payload["version"] == "0.5.9.0"
+    assert payload["version"] == "0.5.9.1"
     assert "stream_rate" in payload
     assert "avg_latency" in payload
+    assert "avg_stream_latency_ms" in payload
+    assert "stream_drop_rate" in payload
+    assert "ollama_healthy" in payload
+    assert "restart_count" in payload

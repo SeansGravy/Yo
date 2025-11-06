@@ -65,7 +65,7 @@ from yo.system_tools import (
     system_snapshot,
     system_restore,
 )
-from yo import recovery
+from yo import recovery, monitor_ollama
 from yo.chat import CHAT_DAILY_DIR
 from yo.events import EVENT_LOG_DIR, publish_event
 import httpx
@@ -289,6 +289,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "report": "Insights",
     "help": "Utilities",
     "version": "General",
+    "monitor": "Maintenance",
 }
 ALIAS_EXPANSIONS: Dict[str, list[str]] = {
     "t": ["telemetry", "analyze"],
@@ -1012,6 +1013,50 @@ def _handle_version(_: argparse.Namespace, __: YoBrain | None = None) -> None:
     print(f"Yo version: {__version__}")
 
 
+def _handle_monitor_ollama(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    interval = getattr(args, "interval", monitor_ollama.DEFAULT_INTERVAL)
+    timeout = getattr(args, "timeout", monitor_ollama.DEFAULT_TIMEOUT)
+    watch = getattr(args, "watch", False)
+    max_cycles = getattr(args, "max_cycles", None)
+    stats = monitor_ollama.load_stats()
+    print(monitor_ollama.format_stats(stats))
+    monitor_ollama.run_monitor(
+        interval=interval,
+        timeout=timeout,
+        watch=watch or bool(max_cycles),
+        max_cycles=max_cycles,
+    )
+
+
+def _handle_health_ollama(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    interval = getattr(args, "interval", monitor_ollama.DEFAULT_INTERVAL)
+    timeout = getattr(args, "timeout", monitor_ollama.DEFAULT_TIMEOUT)
+    watch = getattr(args, "watch", False)
+
+    def _probe() -> None:
+        stats_before = monitor_ollama.load_stats()
+        success, latency_ms, error = monitor_ollama.ping_ollama(timeout=timeout)
+        monitor_ollama.log_ping_result(success, latency_ms, error, stats_before.restart_count)
+        stats_after = monitor_ollama.load_stats()
+        icon = "✅" if success else "⚠️"
+        latency_text = f"{latency_ms:.1f} ms" if latency_ms is not None else "n/a"
+        if success:
+            print(f"{icon} Ollama responded in {latency_text}")
+        else:
+            print(f"{icon} Ollama ping failed ({error or 'unknown'})")
+        print(monitor_ollama.format_stats(stats_after))
+
+    try:
+        _probe()
+        if not watch:
+            return
+        while True:
+            time.sleep(interval)
+            _probe()
+    except KeyboardInterrupt:
+        print("\nℹ️  Ollama health watch stopped.")
+
+
 def _handle_help(args: argparse.Namespace, __: YoBrain | None = None) -> None:
     topic = args.topic
     if topic:
@@ -1492,6 +1537,9 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
         return
     if action == "stream":
         _handle_health_stream(args, None)
+        return
+    if action == "ollama":
+        _handle_health_ollama(args, None)
         return
     if action != "report":
         raise SystemExit(f"Unknown health action '{action}'. Try `yo health report`.")
@@ -3226,12 +3274,51 @@ def build_parser() -> argparse.ArgumentParser:
     health_parser.add_argument("--timeout", type=float, default=5.0, help="Timeout for web health probe (seconds)")
     health_parser.add_argument("--message", default="probe", help="Probe message for chat/WebSocket health")
     health_parser.add_argument("--ns", default="default", help="Namespace for chat/WebSocket probes")
+    health_parser.add_argument("--watch", action="store_true", help="Continuously refresh the selected health probe")
+    health_parser.add_argument(
+        "--interval",
+        type=float,
+        default=monitor_ollama.DEFAULT_INTERVAL,
+        help="Interval between checks when --watch is enabled (seconds)",
+    )
     health_parser.add_argument(
         "--force-fallback",
         action="store_true",
         help="Force REST fallback path when probing chat health",
     )
     health_parser.set_defaults(handler=_handle_health_report)
+
+    monitor_parser = _add_top_level("monitor", help_text="Run continuous system monitors", category="Maintenance")
+    monitor_sub = monitor_parser.add_subparsers(dest="monitor_command", required=True)
+
+    monitor_ollama_parser = monitor_sub.add_parser(
+        "ollama",
+        help="Watch the Ollama daemon and restart it if it becomes unresponsive",
+        description="Monitor the Ollama service with automatic restarts",
+    )
+    monitor_ollama_parser.add_argument(
+        "--interval",
+        type=float,
+        default=monitor_ollama.DEFAULT_INTERVAL,
+        help="Seconds between health checks (default: %(default)s)",
+    )
+    monitor_ollama_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=monitor_ollama.DEFAULT_TIMEOUT,
+        help="Ping timeout in seconds (default: %(default)s)",
+    )
+    monitor_ollama_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Print ping status each cycle (recommended when running in foreground)",
+    )
+    monitor_ollama_parser.add_argument(
+        "--max-cycles",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    monitor_ollama_parser.set_defaults(handler=_handle_monitor_ollama)
 
     system_parser = _add_top_level("system", help_text="Lifecycle and maintenance tools", category="Maintenance")
     system_sub = system_parser.add_subparsers(dest="system_command", required=True)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
 import httpx
@@ -47,6 +48,14 @@ def _safe_version(dist: str) -> str | None:
         return None
     except Exception:  # pragma: no cover - defensive fallback
         return None
+
+
+class OllamaStreamError(RuntimeError):
+    """Raised when the Ollama streaming endpoint encounters an error."""
+
+
+class OllamaStreamTimeout(OllamaStreamError):
+    """Raised when the Ollama stream fails to yield tokens within the expected window."""
 
 
 @dataclass(frozen=True)
@@ -248,6 +257,7 @@ async def stream_ollama_chat(
     *,
     base_url: str | None = None,
     timeout: float = 30.0,
+    silence_timeout: float = 5.0,
 ) -> AsyncIterator[str]:
     """Yield streaming chat tokens from the Ollama /api/generate endpoint."""
 
@@ -259,7 +269,14 @@ async def stream_ollama_chat(
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", endpoint, json=payload, timeout=timeout) as response:
                 response.raise_for_status()
-                async for line in response.aiter_lines():
+                line_iter = response.aiter_lines()
+                while True:
+                    try:
+                        line = await asyncio.wait_for(line_iter.__anext__(), timeout=silence_timeout)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError as exc:
+                        raise OllamaStreamTimeout("Ollama streaming response stalled.") from exc
                     if not line:
                         continue
                     try:
@@ -272,12 +289,16 @@ async def stream_ollama_chat(
                         yield chunk
                     if data.get("done"):
                         break
+    except OllamaStreamTimeout:
+        raise
+    except httpx.TimeoutException as exc:
+        raise OllamaStreamTimeout("Ollama streaming request timed out.") from exc
     except httpx.HTTPError as exc:
         LOGGER.warning("Ollama streaming request failed: %s", exc)
-        return
+        raise OllamaStreamError(f"Ollama streaming request failed: {exc}") from exc
     except Exception as exc:  # pragma: no cover - defensive path
         LOGGER.warning("Unexpected error during Ollama streaming request: %s", exc)
-        return
+        raise OllamaStreamError(f"Unexpected streaming error: {exc}") from exc
 
 
 def select_model(
@@ -375,4 +396,6 @@ __all__ = [
     "select_model",
     "run_ollama_chat",
     "stream_ollama_chat",
+    "OllamaStreamError",
+    "OllamaStreamTimeout",
 ]

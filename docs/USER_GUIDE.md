@@ -505,6 +505,24 @@ Prefer a quick browser check? Open [http://localhost:8000/api/health/chat](http:
 
 ---
 
+## ♻️ Ollama Self-Healing
+
+Yo can automatically recover the local Ollama daemon if it stops responding:
+
+```bash
+python3 -m yo.cli monitor ollama
+```
+
+The watchdog pings `/api/generate` every 15 s, restarts Ollama after two consecutive failures, and records ping latency and restart events in `data/logs/ollama_monitor.log`. Check the latest status any time with:
+
+```bash
+python3 -m yo.cli health ollama --watch
+```
+
+The CLI prints uptime %, restart counts, and average latency, while `/api/health/chat` surfaces the same metrics for dashboards and external monitors.
+
+---
+
 ## 8. Troubleshooting & Tips
 
 | Issue | Likely Cause | Fix |

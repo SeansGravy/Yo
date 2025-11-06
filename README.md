@@ -104,6 +104,12 @@ scripts/setup_yo_dev.sh
 - The hourly GitHub Actions workflow `.github/workflows/health-monitor.yml` runs the same command and uploads the JSONL log, giving the team a rolling audit of system freshness and pass rates.
 - Every chat turn now records emit successes/failures to `data/logs/chat_timing.jsonl`; inspect delivery timelines with `yo telemetry trace --session <id>` when debugging UI silence.
 
+### ♻️ Automatic Ollama Recovery
+
+- Run `python3 -m yo.cli monitor ollama` to keep the local Ollama daemon in check. The watchdog pings the `/api/generate` endpoint every 15 s, restarts the service after two consecutive failures, and appends structured entries to `data/logs/ollama_monitor.log`.
+- `yo health ollama [--watch]` performs an on-demand ping, reports uptime %, restart counts, and average latency, and can refresh continuously with `--watch --interval <seconds>`.
+- Each restart and ping latency is logged to `metrics.jsonl`, feeding the `/api/health/chat` endpoint and analytics dashboard so unattended deployments surface drift in real time.
+
 ## 🧯 Troubleshooting the :8000 Hang
 
 - Launch with instrumentation: `python3 -m yo.cli web --debug --port 8010` (or `yo web --debug --port 8010`). Debug mode enables asyncio tracing, faulthandler dumps, and request logging to `data/logs/web_startup.log`.
