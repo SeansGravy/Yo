@@ -13,14 +13,16 @@ import os
 import re
 import sqlite3
 import time
+import threading
 from datetime import datetime, timedelta
 from importlib import util as import_util
 from pathlib import Path
+from queue import SimpleQueue
 from typing import Any, Dict, List, Optional, Tuple, NoReturn
 
 from yo.logging_utils import get_logger
 from yo.config import Config as YoConfig, get_config
-from yo.backends import select_model, run_ollama_chat
+from yo.backends import select_model, run_ollama_chat, stream_ollama_chat
 
 try:  # pragma: no cover - dependency presence is validated in tests
     import chardet
@@ -1140,6 +1142,23 @@ class YoBrain:
         conversation.append({"role": "user", "content": message})
         return conversation, memory_context, citations
 
+    @staticmethod
+    def _build_prompt(messages: list[dict[str, str]], fallback_message: str) -> str:
+        segments: list[str] = []
+        for entry in messages:
+            role = (entry.get("role") or "").lower()
+            content = str(entry.get("content") or "").strip()
+            if not content:
+                continue
+            if role == "system":
+                segments.append(content)
+            elif role == "user":
+                segments.append(f"User: {content}")
+            else:
+                segments.append(f"Assistant: {content}")
+        prompt = "\n\n".join(segments).strip()
+        return prompt or fallback_message
+
     def chat(
         self,
         *,
@@ -1157,23 +1176,7 @@ class YoBrain:
         namespace = namespace or self.active_namespace
         conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
 
-        def _build_prompt(messages: list[dict[str, str]]) -> str:
-            segments: list[str] = []
-            for entry in messages:
-                role = (entry.get("role") or "").lower()
-                content = str(entry.get("content") or "").strip()
-                if not content:
-                    continue
-                if role == "system":
-                    segments.append(content)
-                elif role == "user":
-                    segments.append(f"User: {content}")
-                else:
-                    segments.append(f"Assistant: {content}")
-            prompt = "\n\n".join(segments).strip()
-            return prompt or message
-
-        prompt = _build_prompt(conversation)
+        prompt = self._build_prompt(conversation, message)
         reply_text = run_ollama_chat(self.model_name, prompt, stream=False).strip()
         if not reply_text:
             self._logger.warning("Empty response from Ollama, retrying once (model=%s)", self.model_name)
@@ -1298,6 +1301,100 @@ class YoBrain:
                 "error": str(exc),
             }
 
+    async def chat_stream_async(
+        self,
+        *,
+        message: str,
+        namespace: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        web: bool = False,
+        timeout: float | None = None,
+    ):
+        """Asynchronously yield chat tokens followed by a completion payload."""
+
+        if not message:
+            raise ValueError("Message cannot be empty.")
+
+        namespace = namespace or self.active_namespace
+        conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
+        prompt = self._build_prompt(conversation, message)
+        if timeout is not None:
+            stream_timeout = timeout
+        else:
+            env_timeout = os.environ.get("YO_CHAT_STREAM_TIMEOUT")
+            if env_timeout:
+                try:
+                    stream_timeout = float(env_timeout)
+                except ValueError:
+                    self._logger.warning(
+                        "Invalid YO_CHAT_STREAM_TIMEOUT value '%s'; falling back to default.", env_timeout
+                    )
+                    stream_timeout = 30.0
+            else:
+                try:
+                    stream_timeout = float(os.environ.get("YO_CHAT_TIMEOUT", 30.0))
+                except ValueError:
+                    stream_timeout = 30.0
+        preview = message[:80]
+        start_time = time.perf_counter()
+        self._logger.info(
+            "chat_stream_async start namespace=%s model=%s preview=%s timeout=%.1fs",
+            namespace,
+            getattr(self, "model_name", "unknown"),
+            preview,
+            stream_timeout,
+        )
+
+        tokens: list[str] = []
+        error_detail: Exception | None = None
+        try:
+            async for chunk in stream_ollama_chat(
+                self.model_name,
+                prompt,
+                timeout=stream_timeout,
+            ):
+                token = str(chunk)
+                if token:
+                    tokens.append(token)
+                    yield {"token": token, "done": False}
+        except Exception as exc:  # pragma: no cover - defensive path
+            error_detail = exc
+            self._logger.warning(
+                "chat_stream_async error namespace=%s preview=%s: %s",
+                namespace,
+                preview,
+                exc,
+            )
+
+        if not tokens:
+            self._logger.warning("chat_stream_async produced no tokens namespace=%s preview=%s", namespace, preview)
+
+        reply = "".join(tokens).strip()
+        if not reply:
+            if error_detail is not None:
+                reply = "(model stream error)"
+            else:
+                reply = "(model returned no content)"
+
+        elapsed = time.perf_counter() - start_time
+        self._logger.info(
+            "chat_stream_async complete namespace=%s elapsed=%.2fs tokens=%d",
+            namespace,
+            elapsed,
+            len(tokens),
+        )
+
+        payload: dict[str, Any] = {
+            "token": "",
+            "done": True,
+            "response": reply,
+            "context": memory_context,
+            "citations": citations,
+        }
+        if error_detail is not None:
+            payload["error"] = str(error_detail)
+        yield payload
+
     def chat_stream(
         self,
         *,
@@ -1305,6 +1402,7 @@ class YoBrain:
         namespace: str | None = None,
         history: list[dict[str, str]] | None = None,
         web: bool = False,
+        timeout: float | None = None,
     ):
         """Yield chat tokens followed by a completion payload."""
 
@@ -1312,26 +1410,46 @@ class YoBrain:
             raise ValueError("Message cannot be empty.")
 
         namespace = namespace or self.active_namespace
-        conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
+        queue: SimpleQueue[Any] = SimpleQueue()
+        sentinel = object()
+        errors: list[BaseException] = []
 
-        collected: list[str] = []
-        stream = self.client.chat(model=self.model_name, messages=conversation, stream=True)
-        for chunk in stream:
-            token = ""
-            if isinstance(chunk, dict):
-                message_block = chunk.get("message")
-                if isinstance(message_block, dict):
-                    token = message_block.get("content") or ""
-                token = token or chunk.get("response", "")
-            if token:
-                collected.append(token)
-                yield {"token": token, "done": False}
+        async def _produce() -> None:
+            try:
+                async for chunk in self.chat_stream_async(
+                    message=message,
+                    namespace=namespace,
+                    history=history,
+                    web=web,
+                    timeout=timeout,
+                ):
+                    queue.put(chunk)
+            except Exception as exc:  # pragma: no cover - defensive path
+                errors.append(exc)
+            finally:
+                queue.put(sentinel)
 
-        reply = "".join(collected).strip()
-        yield {
-            "token": "",
-            "done": True,
-            "response": reply,
-            "context": memory_context,
-            "citations": citations,
-        }
+        def _runner() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_produce())
+            finally:
+                try:
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
+                loop.close()
+
+        worker = threading.Thread(target=_runner, name="yo-chat-stream", daemon=True)
+        worker.start()
+        try:
+            while True:
+                item = queue.get()
+                if item is sentinel:
+                    break
+                yield item
+        finally:
+            worker.join()
+        if errors:
+            raise errors[0]

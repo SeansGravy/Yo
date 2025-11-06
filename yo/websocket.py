@@ -230,6 +230,8 @@ class ConnectionManager:
             try:
                 await websocket.send_json(payload)
                 successes += 1
+                if event_type == "chat_complete":
+                    await asyncio.sleep(0.25)
             except Exception as exc:  # pragma: no cover - transport failure
                 log_ws_error(f"chat emit failed session={session_id}: {exc}")
                 failures.append(str(exc))
@@ -261,3 +263,8 @@ class ConnectionManager:
 
         if event_type == "chat_complete":
             record_metric("chat_stream_health", ok=1 if success else 0)
+            if not success:
+                LOGGER.warning("Stream ended before completion for session %s", session_id)
+                record_metric("chat_stream_incomplete", session=session_id)
+            else:
+                record_metric("chat_stream_finalized", ok=1)

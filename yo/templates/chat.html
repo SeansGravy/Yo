@@ -317,7 +317,9 @@
         chatSocket = new WebSocket(wsUrl);
         chatSocket.onopen = () => {
           statusEl.textContent = '';
-          updateDebug('WebSocket connected');
+          if (debugEnabled) {
+            updateDebug('WebSocket connected');
+          }
         };
         chatSocket.onmessage = (event) => {
           try {
@@ -335,9 +337,18 @@
           }
           try { chatSocket.close(); } catch (error) { /* noop */ }
         };
-        chatSocket.onclose = () => {
+        chatSocket.onclose = (event) => {
+          const code = event?.code ?? 0;
+          if (code === 1000 || code === 1001) {
+            statusEl.textContent = 'Connection closed cleanly.';
+            if (debugEnabled) {
+              updateDebug(`WebSocket closed cleanly (code=${code})`);
+            }
+            chatSocket = null;
+            return;
+          }
           if (debugEnabled) {
-            updateDebug('WebSocket closed; attempting reconnect');
+            updateDebug(`WebSocket closed unexpectedly (code=${code}); reconnecting`);
           }
           statusEl.textContent = 'Reconnecting…';
           chatSocket = null;

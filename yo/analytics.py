@@ -141,6 +141,8 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
     chat_tokens: List[int] = []
     chat_first_token: List[float] = []
     chat_fallbacks = 0
+    stream_finalized = 0
+    stream_events = 0
     ingest_counts = Counter()
     ingest_duration: List[float] = []
 
@@ -160,6 +162,10 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
                 chat_first_token.append(float(entry["first_token_latency_ms"]))
             if entry.get("fallback"):
                 chat_fallbacks += 1
+        elif entry_type == "chat_stream_finalized":
+            stream_events += 1
+            if entry.get("ok"):
+                stream_finalized += 1
         elif entry_type == "ingest":
             ingest_counts[entry.get("namespace", "default")] += 1
             if isinstance(entry.get("duration_seconds"), (int, float)):
@@ -184,6 +190,7 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
             "avg_first_token_latency_ms": _average(chat_first_token),
             "fallback_count": chat_fallbacks,
             "success_rate": None if total_chat_sessions == 0 else (total_chat_sessions - chat_fallbacks) / total_chat_sessions,
+            "stream_finalization_rate": None if stream_events == 0 else stream_finalized / stream_events,
         },
         "ingest": {
             "total_runs": sum(ingest_counts.values()),

@@ -10,7 +10,7 @@ from importlib import util as import_util
 from shutil import which
 import subprocess
 import os
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Any, AsyncIterator
 
 from yo.config import (
     Config,
@@ -182,6 +182,21 @@ def _default_model_for(provider: str, task_type: str) -> str:
     return DEFAULT_MODEL_MAP.get(task, {}).get(provider, "")
 
 
+def _extract_ollama_chunk(payload: dict[str, Any]) -> str:
+    """Extract a text chunk from an Ollama response payload."""
+
+    chunk = payload.get("response") or ""
+    if chunk:
+        return str(chunk)
+
+    message = payload.get("message")
+    if isinstance(message, dict):
+        content = message.get("content", "")
+        if content:
+            return str(content)
+    return ""
+
+
 def run_ollama_chat(
     model: str,
     prompt: str,
@@ -209,26 +224,60 @@ def run_ollama_chat(
                     except json.JSONDecodeError:
                         LOGGER.warning("Unable to decode Ollama stream chunk: %s", line)
                         continue
-                    chunk = data.get("response") or ""
-                    if not chunk and isinstance(data.get("message"), dict):
-                        chunk = data["message"].get("content", "")
+                    chunk = _extract_ollama_chunk(data)
                     if chunk:
-                        text_parts.append(str(chunk))
+                        text_parts.append(chunk)
         else:
             response = httpx.post(endpoint, json=payload, timeout=timeout)
             response.raise_for_status()
             data = response.json()
-            chunk = data.get("response") or ""
-            if not chunk and isinstance(data.get("message"), dict):
-                chunk = data["message"].get("content", "")
+            chunk = _extract_ollama_chunk(data)
             if chunk:
-                text_parts.append(str(chunk))
+                text_parts.append(chunk)
     except httpx.HTTPError as exc:
         LOGGER.warning("Ollama request failed: %s", exc)
     except Exception as exc:  # pragma: no cover - defensive path
         LOGGER.warning("Unexpected error contacting Ollama: %s", exc)
 
     return "".join(text_parts)
+
+
+async def stream_ollama_chat(
+    model: str,
+    prompt: str,
+    *,
+    base_url: str | None = None,
+    timeout: float = 30.0,
+) -> AsyncIterator[str]:
+    """Yield streaming chat tokens from the Ollama /api/generate endpoint."""
+
+    base = base_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+    endpoint = f"{base.rstrip('/')}/api/generate"
+    payload = {"model": model, "prompt": prompt, "stream": True}
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", endpoint, json=payload, timeout=timeout) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        LOGGER.warning("Unable to decode Ollama stream chunk: %s", line)
+                        continue
+                    chunk = _extract_ollama_chunk(data)
+                    if chunk:
+                        yield chunk
+                    if data.get("done"):
+                        break
+    except httpx.HTTPError as exc:
+        LOGGER.warning("Ollama streaming request failed: %s", exc)
+        return
+    except Exception as exc:  # pragma: no cover - defensive path
+        LOGGER.warning("Unexpected error during Ollama streaming request: %s", exc)
+        return
 
 
 def select_model(
@@ -324,4 +373,6 @@ __all__ = [
     "ModelSelection",
     "detect_backends",
     "select_model",
+    "run_ollama_chat",
+    "stream_ollama_chat",
 ]
