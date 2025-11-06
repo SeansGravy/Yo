@@ -881,6 +881,9 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                     web=payload.web,
                 )
             except asyncio.TimeoutError:
+                chat_logger.warning(
+                    "chat stream stalled namespace=%s message=%s", namespace, truncated_msg
+                )
                 fallback_triggered = True
                 stream_actual = False
                 chat_logger.warning(
@@ -1043,19 +1046,19 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         if not stream_requested or force_fallback or not stream_actual:
             stream_actual = False
             if reply_dict is None:
-                session_id, reply_text, history, metadata = await _run_sync(
-                    chat_store.send,
-                    timeout=chat_timeout,
-                    brain=brain,
-                    namespace=namespace,
-                    message=message,
-                    session_id=payload.session_id,
-                    web=payload.web,
-                    fallback=force_fallback,
-                )
-                reply_dict = _coerce_reply_dict(reply_text, default_text="[fallback reply unavailable]")
-                fallback_triggered = fallback_triggered or force_fallback
-                if force_fallback:
+                if fallback_triggered or force_fallback:
+                    session_id, reply_text, history, metadata = await _run_sync(
+                        chat_store.send,
+                        timeout=chat_timeout,
+                        brain=brain,
+                        namespace=namespace,
+                        message=message,
+                        session_id=payload.session_id,
+                        web=payload.web,
+                        fallback=force_fallback,
+                    )
+                    reply_dict = _coerce_reply_dict(reply_text, default_text="[fallback reply unavailable]")
+                    fallback_triggered = fallback_triggered or force_fallback
                     fallback_log = {
                         "event": "fallback_result",
                         "namespace": namespace,
@@ -1077,6 +1080,19 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         len(reply_dict.get("text", "") or ""),
                     )
                     _log_fallback_emit(session_id, namespace, reply_dict)
+                else:
+                    # Force fallback check to gather a reply
+                    session_id, reply_text, history, metadata = await _run_sync(
+                        chat_store.send,
+                        timeout=chat_timeout,
+                        brain=brain,
+                        namespace=namespace,
+                        message=message,
+                        session_id=payload.session_id,
+                        web=payload.web,
+                        fallback=False,
+                    )
+                    reply_dict = _coerce_reply_dict(reply_text, default_text="(No response generated.)")
     except ValueError as exc:
         chat_logger.error("chat validation error namespace=%s: %s", namespace, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1101,7 +1117,7 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         stream_actual = False
 
     chat_logger.info(
-        "chat complete namespace=%s stream=%s fallback=%s tokens=%s elapsed=%.1fms",
+        "chat end namespace=%s stream=%s fallback=%s tokens=%s elapsed=%.1fms",
         namespace,
         stream_actual,
         fallback_used,
@@ -1134,6 +1150,8 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
             chat_logger.warning("Unable to record chat_slow metric.", exc_info=True)
 
     try:
+        live_success_value = 0 if fallback_used else 1
+        token_word_count = len(reply_text_value.split())
         record_metric(
             "chat",
             namespace=namespace,
@@ -1150,6 +1168,8 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         else:
             ws_metric_value = 100
         record_metric("ws_success_rate", value=ws_metric_value)
+        record_metric("chat_live_success_rate", value=live_success_value)
+        record_metric("chat_tokens_avg", value=token_word_count)
         if fallback_used:
             record_metric("chat_fallback_empty", value=0 if reply_text_value else 1)
     except Exception:  # pragma: no cover
@@ -1181,6 +1201,7 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         "fallback": fallback_used,
         "tokens_emitted": tokens_emitted,
         "first_token_latency_ms": first_token_latency_ms,
+        "model": getattr(brain, "model_name", None),
     }
     return JSONResponse(content=response_payload)
 

@@ -1224,18 +1224,18 @@ class YoBrain:
             effective_timeout,
         )
 
-        def _invoke() -> Any:
-            return self.chat(
-                message=message,
-                namespace=namespace,
-                history=history,
-                web=web,
-                stream=False,
-            )
-
         try:
-            invoke_future = asyncio.wait_for(loop.run_in_executor(None, _invoke), timeout=effective_timeout)
-            result = await asyncio.shield(invoke_future)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.chat,
+                    message=message,
+                    namespace=namespace,
+                    history=history,
+                    web=web,
+                    stream=False,
+                ),
+                timeout=effective_timeout,
+            )
             if isinstance(result, dict):
                 payload = dict(result)
                 text_value = str(payload.get("text") or "").strip()

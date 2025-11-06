@@ -171,16 +171,19 @@ def summarize_usage(entries: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
             return None
         return sum(seq) / len(seq)
 
+    total_chat_sessions = sum(chat_sessions.values())
+
     return {
         "commands": commands.most_common(),
         "namespaces": namespaces.most_common(),
         "chat": {
-            "total_sessions": sum(chat_sessions.values()),
+            "total_sessions": total_chat_sessions,
             "by_namespace": chat_sessions.most_common(),
             "avg_latency_seconds": _average(chat_latency),
             "avg_tokens": _average(chat_tokens),
             "avg_first_token_latency_ms": _average(chat_first_token),
             "fallback_count": chat_fallbacks,
+            "success_rate": None if total_chat_sessions == 0 else (total_chat_sessions - chat_fallbacks) / total_chat_sessions,
         },
         "ingest": {
             "total_runs": sum(ingest_counts.values()),

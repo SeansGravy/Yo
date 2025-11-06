@@ -73,6 +73,7 @@ import websockets
 from yo.metrics import summarize_since, parse_since_window, record_metric
 from yo.analytics import analytics_enabled, load_analytics, record_cli_command, summarize_usage
 from yo.optimizer import generate_recommendations, apply_recommendations
+from yo.metrics import record_metric
 
 try:  # pragma: no cover - optional dependency
     from rich.console import Console
@@ -745,6 +746,48 @@ def _handle_ask(args: argparse.Namespace, brain: YoBrain | None) -> None:
         return
 
     brain.ask(args.question, namespace=namespace, web=args.web)
+
+
+def _handle_chat_verify(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 8000)
+    namespace = getattr(args, "ns", "default") or "default"
+    timeout = getattr(args, "timeout", 10.0)
+    message = args.message
+
+    url = f"http://{host}:{port}/api/chat"
+    session_id = f"verify-{int(time.time() * 1000)}"
+    payload = {
+        "namespace": namespace,
+        "message": message,
+        "session_id": session_id,
+        "stream": True,
+    }
+
+    started = time.perf_counter()
+    try:
+        response = httpx.post(url, json=payload, timeout=timeout)
+    except Exception as exc:
+        print(f"❌ chat verify failed: {exc}")
+        raise SystemExit(1) from exc
+
+    elapsed = time.perf_counter() - started
+    if response.status_code != 200:
+        print(f"❌ chat verify failed HTTP {response.status_code}: {response.text}")
+        raise SystemExit(1)
+
+    data = response.json()
+    reply_payload = data.get("reply") or {}
+    if isinstance(reply_payload, dict):
+        reply_text = str(reply_payload.get("text") or reply_payload.get("response") or "")
+    else:
+        reply_text = str(reply_payload or "")
+    reply_text = reply_text.strip()
+    tokens = len(reply_text.split())
+    print(
+        f"[CHAT VERIFY] ns={namespace} elapsed={elapsed:.2f}s tokens={tokens} fallback={data.get('fallback')}"
+    )
+    print(f"reply=\"{reply_text or '(no text)'}\"")
 
 
 def _handle_summarize(args: argparse.Namespace, brain: YoBrain | None) -> None:
@@ -2300,6 +2343,12 @@ def _handle_analytics_report(args: argparse.Namespace, __: YoBrain | None = None
             print(f"   • Avg latency: {avg_latency:.2f}s")
         if avg_tokens is not None:
             print(f"   • Avg tokens: {avg_tokens:.0f}")
+        success_rate = chat_info.get("success_rate")
+        if success_rate is not None:
+            print(f"   • Live success rate: {success_rate * 100:.1f}%")
+        fallback_count = chat_info.get("fallback_count")
+        if fallback_count:
+            print(f"   • Fallback count: {fallback_count}")
         by_ns = chat_info.get("by_namespace") or []
         if by_ns:
             print(f"   • Sessions by namespace: {', '.join(f'{ns} ({count})' for ns, count in by_ns[:5])}")
@@ -2409,12 +2458,77 @@ def _handle_verify_ledger(_: argparse.Namespace, __: YoBrain | None = None) -> N
         print(f"   Signature: {signature}")
 
 
+def _chat_verify_http(
+    *,
+    host: str,
+    port: int,
+    namespace: str,
+    message: str,
+    timeout: float,
+    debug: bool = False,
+) -> None:
+    url = f"http://{host}:{port}/api/chat"
+    session_id = f"verify-{int(time.time() * 1000)}"
+    payload = {
+        "namespace": namespace,
+        "message": message,
+        "session_id": session_id,
+        "stream": True,
+    }
+
+    started = time.perf_counter()
+    try:
+        response = httpx.post(url, json=payload, timeout=timeout)
+    except Exception as exc:
+        print(f"❌ chat verify failed: {exc}")
+        raise SystemExit(1) from exc
+
+    elapsed = time.perf_counter() - started
+    if response.status_code != 200:
+        print(f"❌ chat verify failed HTTP {response.status_code}: {response.text}")
+        raise SystemExit(1)
+
+    data = response.json()
+    if debug:
+        print(json.dumps(data, indent=2))
+
+    reply_payload = data.get("reply") or {}
+    if isinstance(reply_payload, dict):
+        reply_text = str(reply_payload.get("text") or reply_payload.get("response") or "")
+    else:
+        reply_text = str(reply_payload or "")
+    reply_text = reply_text.strip()
+    tokens = len(reply_text.split())
+    print(
+        f"[CHAT VERIFY] ns={namespace} model={data.get('model') or 'unknown'} "
+        f"elapsed={elapsed:.2f}s tokens={tokens} fallback={data.get('fallback')}"
+    )
+    print(f"reply=\"{reply_text or '(no text)'}\"")
+
+
 def _handle_chat(args: argparse.Namespace, brain: YoBrain | None = None) -> None:
     if brain is None:
         brain = YoBrain()
 
     namespace = getattr(args, "ns", None) or getattr(brain, "active_namespace", _active_namespace_default())
     namespace = namespace or _active_namespace_default()
+
+    if args.message and args.message[0].lower() == "verify":
+        verify_tokens = args.message[1:]
+        if not verify_tokens:
+            raise SystemExit("Provide a message to verify (example: yo chat verify \"ping\")")
+        verify_message = " ".join(verify_tokens).strip()
+        if not verify_message:
+            raise SystemExit("Provide a message to verify (example: yo chat verify \"ping\")")
+        _chat_verify_http(
+            host=getattr(args, "host", "127.0.0.1"),
+            port=getattr(args, "port", 8000),
+            namespace=namespace,
+            message=verify_message,
+            timeout=float(getattr(args, "timeout", 10.0)),
+            debug=getattr(args, "debug", False),
+        )
+        return
 
     history: list[dict[str, str]] = []
 
@@ -2863,10 +2977,14 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.set_defaults(handler=_handle_ask)
 
     chat_parser = _add_top_level("chat", help_text="Chat with YoBrain", category="Retrieval")
-    chat_parser.add_argument("message", nargs="*", help="Message to send immediately")
+    chat_parser.add_argument("message", nargs="*", help="Message to send immediately (prefix with 'verify' to probe the API)")
     chat_parser.add_argument("--ns", help="Namespace to target (default: active namespace)")
     chat_parser.add_argument("--web", action="store_true", help="Blend cached web context into replies")
     chat_parser.add_argument("--stream", action="store_true", help="Stream tokens as they generate")
+    chat_parser.add_argument("--host", default="127.0.0.1", help="Target host for chat verify (default: 127.0.0.1)")
+    chat_parser.add_argument("--port", type=int, default=8000, help="Target port for chat verify (default: 8000)")
+    chat_parser.add_argument("--timeout", type=float, default=10.0, help="Timeout for chat verify requests")
+    chat_parser.add_argument("--debug", action="store_true", help="Emit additional debug output for verify mode")
     chat_parser.set_defaults(handler=_handle_chat)
 
     summarize_parser = _add_top_level("summarize", help_text="Summarize a namespace", category="Retrieval")

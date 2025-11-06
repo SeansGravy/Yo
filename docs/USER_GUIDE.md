@@ -422,6 +422,12 @@ Every REST fallback now yields a consistent payload so the browser can always fi
 
 If the model raises or returns an empty body, Yo substitutes a human-readable placeholder (`(Model returned no text)`, `(Timed out waiting for model response)`, or `[Chat error: …]`). Use `yo telemetry trace --session <id>` to inspect delivery timing across `/api/chat` and the WebSocket stream when debugging silent replies.
 
+### 4.28 Live Chat Verification & Metrics
+
+- Run `python3 -m yo.cli chat verify "ping"` to issue a live `/api/chat` request and capture elapsed time, token count, and fallback state; append `--debug` to print the raw JSON payload.
+- The metrics log now includes `chat_live_success_rate` and `chat_tokens_avg`, so `yo metrics summarize` and `yo analytics report` highlight long-term success rates alongside average token counts.
+- Combine the CLI probe with `yo health chat --force-fallback` to distinguish infrastructure outages (no reply) from model-level regressions (fallback or empty text).
+
 ---
 
 ## 5. Example Session

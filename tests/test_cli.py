@@ -368,6 +368,34 @@ def test_health_ws_success(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Captu
     assert calls.get("run") is True
 
 
+def test_chat_verify_helper(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class DummyResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "reply": {"text": "hello"},
+                "fallback": False,
+                "model": "dummy",
+            }
+
+    monkeypatch.setattr(cli.httpx, "post", lambda *args, **kwargs: DummyResponse())
+
+    cli._chat_verify_http(
+        host="127.0.0.1",
+        port=8000,
+        namespace="default",
+        message="ping",
+        timeout=2.0,
+        debug=False,
+    )
+
+    output = capsys.readouterr().out
+    assert "[CHAT VERIFY]" in output
+    assert "fallback=False" in output
+
+
 def test_handle_verify_ledger_prints_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     data_dir = tmp_path / "data/logs"
     data_dir.mkdir(parents=True, exist_ok=True)

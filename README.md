@@ -127,6 +127,12 @@ scripts/setup_yo_dev.sh
 - Ingestion honours the new environment knobs automatically; reducing `YO_CHUNK_SIZE` decreases embedding payload size without requiring code edits.
 - `yo health report` now includes the top optimisation suggestions so operators know which action to take next.
 
+## 💬 Live Chat Verification & Metrics
+
+- `yo chat verify "ping"` issues a live `/api/chat` request and prints elapsed time, token count, and whether fallback fired.
+- Use `yo chat verify --debug` to inspect the raw JSON payload returned by the API for deeper diagnostics.
+- New metrics `chat_live_success_rate` and `chat_tokens_avg` surface in `yo metrics summarize` and `yo analytics report`, allowing CI and dashboards to alert whenever live replies dip below the expected success threshold.
+
 ## 🔐 Signature & Clone Verification
 
 - `yo verify signature [--json]` confirms the detached GPG signature in `data/logs/checksums/artifact_hashes.sig` matches the checksum file. Successful runs report the signer, version, and health metadata; JSON mode emits a machine-friendly payload for CI gates.
