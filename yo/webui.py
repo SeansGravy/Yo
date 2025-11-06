@@ -29,7 +29,8 @@ from yo.chat import ChatSessionStore
 from yo.config import get_config, update_config_value
 from yo.events import get_event_bus, publish_event
 from yo.logging_utils import get_logger
-from yo.metrics import summarize_since, record_metric, parse_since_window
+from yo import __version__
+from yo.metrics import summarize_since, record_metric, parse_since_window, load_metrics
 from yo.analytics import (
     analytics_enabled,
     load_analytics,
@@ -429,6 +430,35 @@ async def api_health() -> JSONResponse:
     payload = {"status": status, "timestamp": datetime.utcnow().isoformat()}
     code = 200 if status == "ok" else 503
     return JSONResponse(content=payload, status_code=code)
+
+
+@app.get("/api/health/chat", response_class=JSONResponse)
+async def api_health_chat() -> JSONResponse:
+    try:
+        metrics = load_metrics()
+    except Exception:
+        metrics = []
+
+    success_entries = [entry for entry in metrics if entry.get("type") == "chat_stream_success"]
+    total_success = len(success_entries)
+    successful = sum(1 for entry in success_entries if bool(entry.get("value")))
+    stream_rate = int(round((successful / total_success) * 100)) if total_success else 0
+
+    latency_entries = [entry for entry in metrics if entry.get("type") == "chat_stream_latency_ms"]
+    latency_values = [
+        float(entry.get("value"))
+        for entry in latency_entries
+        if isinstance(entry.get("value"), (int, float))
+    ]
+    avg_latency = int(round(sum(latency_values) / len(latency_values))) if latency_values else 0
+
+    payload = {
+        "status": "ok",
+        "version": __version__,
+        "stream_rate": stream_rate,
+        "avg_latency": avg_latency,
+    }
+    return JSONResponse(content=payload, status_code=200)
 
 
 @app.get("/ui", response_class=HTMLResponse)
@@ -1170,6 +1200,10 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
         record_metric("ws_success_rate", value=ws_metric_value)
         record_metric("chat_live_success_rate", value=live_success_value)
         record_metric("chat_tokens_avg", value=token_word_count)
+        record_metric("chat_stream_success", value=1 if not fallback_used else 0)
+        record_metric("chat_stream_tokens", value=token_word_count)
+        record_metric("chat_stream_latency_ms", value=round(elapsed_ms, 2))
+        record_metric("chat_stream_version", version=__version__)
         if fallback_used:
             record_metric("chat_fallback_empty", value=0 if reply_text_value else 1)
     except Exception:  # pragma: no cover

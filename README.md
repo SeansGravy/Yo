@@ -1,6 +1,7 @@
 # Yo — Conversational Retrieval and Local Intelligence Framework
 
-**Current Release:** v0.4.3 (Rich Ingestion Fixes)
+**Current Release:** v0.5.9.0 — Stream relay, telemetry, and health validation.  
+• Real-time chat metrics and health API (`/api/health/chat`)
 
 Yo is a modular retrieval-augmented generation (RAG) platform with a FastAPI-based Lite UI,
 offline embedding pipeline, and local Milvus Lite vector storage.

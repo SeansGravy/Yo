@@ -10,4 +10,6 @@ warnings.filterwarnings(
     module="milvus_lite",
 )
 
-__all__: list[str] = []
+__version__ = "0.5.9.0"
+
+__all__: list[str] = ["__version__"]

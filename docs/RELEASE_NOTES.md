@@ -4,4 +4,4 @@
 
 For the latest audit summary rendered as HTML, see [`docs/latest.html`](latest.html).
 
-Need the narrative of what changed when? Check the human-curated [CHANGELOG.md](CHANGELOG.md).
+Need the narrative of what changed when? Check the human-curated [CHANGELOG.md](CHANGELOG.md) (see the v0.5.9.0 section).

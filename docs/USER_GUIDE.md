@@ -493,6 +493,18 @@ Combine these endpoints with `yo release list` or the dashboard’s Releases tab
 
 ---
 
+## 🩺 Chat Health Validation
+
+Run the health probe from the CLI to verify live streaming metrics:
+
+```bash
+python3 -m yo.cli health chat
+```
+
+Prefer a quick browser check? Open [http://localhost:8000/api/health/chat](http://localhost:8000/api/health/chat) and confirm the JSON payload includes the current version plus latency stats for your build.
+
+---
+
 ## 8. Troubleshooting & Tips
 
 | Issue | Likely Cause | Fix |

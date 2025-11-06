@@ -14,6 +14,7 @@ import re
 import sqlite3
 import time
 import threading
+import subprocess
 from datetime import datetime, timedelta
 from importlib import util as import_util
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple, NoReturn
 from yo.logging_utils import get_logger
 from yo.config import Config as YoConfig, get_config
 from yo.backends import select_model, run_ollama_chat, stream_ollama_chat
+from yo import __version__
 
 try:  # pragma: no cover - dependency presence is validated in tests
     import chardet
@@ -196,6 +198,9 @@ class YoBrain:
             self.model_name,
             self.db_path,
         )
+        self._empty_reply_lock = threading.Lock()
+        self._empty_reply_streak = 0
+        self._ollama_monitor_path = Path("data/logs/ollama_monitor.log")
 
     def _resolve_db_path(self, uri: str) -> Path:
         if not uri:
@@ -1159,6 +1164,57 @@ class YoBrain:
         prompt = "\n\n".join(segments).strip()
         return prompt or fallback_message
 
+    def _log_ollama_monitor(self, payload: dict[str, Any]) -> None:
+        entry = dict(payload)
+        entry.setdefault("timestamp", datetime.utcnow().isoformat() + "Z")
+        try:
+            self._ollama_monitor_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._ollama_monitor_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
+        except OSError:
+            self._logger.warning("Unable to append Ollama monitor entry: %s", entry)
+
+    def _record_reply_text(self, reply_text: str) -> None:
+        if not hasattr(self, "_empty_reply_lock"):
+            self._empty_reply_lock = threading.Lock()  # type: ignore[attr-defined]
+        if not hasattr(self, "_empty_reply_streak"):
+            self._empty_reply_streak = 0  # type: ignore[attr-defined]
+        if not hasattr(self, "_ollama_monitor_path"):
+            self._ollama_monitor_path = Path("data/logs/ollama_monitor.log")  # type: ignore[attr-defined]
+
+        with self._empty_reply_lock:
+            if reply_text.strip():
+                self._empty_reply_streak = 0
+                return
+            self._empty_reply_streak += 1
+            if self._empty_reply_streak < 2:
+                return
+            self._empty_reply_streak = 0
+
+        self._logger.warning("Detected consecutive empty replies; restarting Ollama.")
+        self._log_ollama_monitor({"event": "ollama_restart", "version": __version__})
+        self._restart_ollama()
+
+    def _restart_ollama(self) -> None:
+        commands = (["ollama", "stop", "all"], ["ollama", "start"])
+        for cmd in commands:
+            try:
+                subprocess.run(cmd, check=False, timeout=15)
+            except FileNotFoundError as exc:
+                self._logger.warning("Ollama command not found while restarting: %s", exc)
+                self._log_ollama_monitor(
+                    {"event": "ollama_restart_error", "version": __version__, "detail": "command_not_found"}
+                )
+                break
+            except Exception as exc:  # pragma: no cover - defensive path
+                self._logger.warning("Failed to execute %s: %s", cmd, exc)
+                self._log_ollama_monitor(
+                    {"event": "ollama_restart_error", "version": __version__, "detail": str(exc)}
+                )
+                break
+        else:
+            self._log_ollama_monitor({"event": "ollama_restart_complete", "version": __version__})
+
     def chat(
         self,
         *,
@@ -1183,6 +1239,8 @@ class YoBrain:
             reply_text = run_ollama_chat(self.model_name, prompt, stream=False).strip()
         if not reply_text:
             reply_text = "(model returned no content)"
+
+        self._record_reply_text(reply_text)
 
         payload: dict[str, Any] = {
             "response": reply_text,
@@ -1375,6 +1433,8 @@ class YoBrain:
                 reply = "(model stream error)"
             else:
                 reply = "(model returned no content)"
+
+        self._record_reply_text(reply)
 
         elapsed = time.perf_counter() - start_time
         self._logger.info(

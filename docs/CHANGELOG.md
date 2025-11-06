@@ -1,5 +1,13 @@
 # Yo Changelog
 
+## v0.5.9.0 — November 5, 2025
+- Finalized real-time streaming relay via async Ollama client
+- Added telemetry (token counts, latency, version tagging)
+- Introduced `/api/health/chat` endpoint
+- Improved fallback resilience and auto-restart handling
+- Added CLI: `yo version` and `yo health chat`
+- Synced documentation and changelog updates
+
 ## [v0.4.1] – 2025-11-04
 ### Added
 - Richer audit tooling (Markdown/HTML exports)

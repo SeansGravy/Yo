@@ -288,6 +288,7 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "system": "Maintenance",
     "report": "Insights",
     "help": "Utilities",
+    "version": "General",
 }
 ALIAS_EXPANSIONS: Dict[str, list[str]] = {
     "t": ["telemetry", "analyze"],
@@ -1003,6 +1004,12 @@ def _handle_config_edit(_: argparse.Namespace, __: YoBrain | None = None) -> Non
         subprocess.run([editor, str(env_path)], check=False)
     except FileNotFoundError as exc:
         raise SystemExit(f"Editor '{editor}' not found.") from exc
+
+
+def _handle_version(_: argparse.Namespace, __: YoBrain | None = None) -> None:
+    from yo import __version__
+
+    print(f"Yo version: {__version__}")
 
 
 def _handle_help(args: argparse.Namespace, __: YoBrain | None = None) -> None:
@@ -3018,6 +3025,9 @@ def build_parser() -> argparse.ArgumentParser:
             parser_obj = subparsers.add_parser(name, **kwargs)
         _register_command(name, parser_obj, help_text=help_text, category=category, aliases=aliases)
         return parser_obj
+
+    version_parser = _add_top_level("version", help_text="Show the installed Yo version", category="General")
+    version_parser.set_defaults(handler=_handle_version)
 
     add_parser = _add_top_level("add", help_text="Ingest files into a namespace", category="Ingestion")
     add_parser.add_argument("path", help="Path to a file or directory to ingest")
