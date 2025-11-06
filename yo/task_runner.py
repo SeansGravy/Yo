@@ -31,7 +31,7 @@ def run_tasks() -> None:
             card.write_text(content + log, encoding="utf-8")
             shutil.move(card, destination)
             print(f"[Codex] {name} → completed")
-            _print_success_echo(version, destination / name)
+            _print_success_echo(version, destination)
         except Exception as exc:  # pragma: no cover - defensive path
             shutil.move(card, failed / name)
             print(f"[Codex] {name} → failed ({exc})")
@@ -61,3 +61,7 @@ def _print_success_echo(version: str, archived_path: Path) -> None:
         print(cmd)
     print("───────────────────────────────")
     print("Please run these commands to publish to the repository.")
+
+
+if __name__ == "__main__":
+    run_tasks()
