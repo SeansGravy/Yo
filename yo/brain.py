@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple, NoReturn
 
 from yo.logging_utils import get_logger
 from yo.config import Config as YoConfig, get_config
-from yo.backends import select_model
+from yo.backends import select_model, run_ollama_chat
 
 try:  # pragma: no cover - dependency presence is validated in tests
     import chardet
@@ -1157,43 +1157,34 @@ class YoBrain:
         namespace = namespace or self.active_namespace
         conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
 
-        chat_kwargs: dict[str, Any] = {"model": self.model_name, "messages": conversation}
-        if stream:
-            chat_kwargs["stream"] = True
-
-        response = self.client.chat(**chat_kwargs)
-        reply = ""
-        stream_citations: list[str] = []
-
-        if stream and hasattr(response, "__iter__") and not isinstance(response, dict):
-            chunks: list[str] = []
-            for chunk in response:
-                if not isinstance(chunk, dict):
+        def _build_prompt(messages: list[dict[str, str]]) -> str:
+            segments: list[str] = []
+            for entry in messages:
+                role = (entry.get("role") or "").lower()
+                content = str(entry.get("content") or "").strip()
+                if not content:
                     continue
-                message_block = chunk.get("message")
-                content = ""
-                if isinstance(message_block, dict):
-                    content = message_block.get("content") or ""
-                content = content or chunk.get("response") or ""
-                if content:
-                    chunks.append(str(content))
-                chunk_citations = chunk.get("citations")
-                if chunk_citations:
-                    stream_citations = chunk_citations
-            reply = "".join(chunks)
-        else:
-            if isinstance(response, dict):
-                message_block = response.get("message")
-                if isinstance(message_block, dict):
-                    reply = message_block.get("content") or ""
-                reply = reply or response.get("response", "")
-            elif isinstance(response, str):
-                reply = response
+                if role == "system":
+                    segments.append(content)
+                elif role == "user":
+                    segments.append(f"User: {content}")
+                else:
+                    segments.append(f"Assistant: {content}")
+            prompt = "\n\n".join(segments).strip()
+            return prompt or message
+
+        prompt = _build_prompt(conversation)
+        reply_text = run_ollama_chat(self.model_name, prompt, stream=False).strip()
+        if not reply_text:
+            self._logger.warning("Empty response from Ollama, retrying once (model=%s)", self.model_name)
+            reply_text = run_ollama_chat(self.model_name, prompt, stream=False).strip()
+        if not reply_text:
+            reply_text = "(model returned no content)"
 
         payload: dict[str, Any] = {
-            "response": (reply or "(No response generated.)").strip(),
+            "response": reply_text,
             "context": memory_context,
-            "citations": stream_citations or citations,
+            "citations": citations,
         }
         return payload
 

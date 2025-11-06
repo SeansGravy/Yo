@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import httpx
 from importlib import metadata as importlib_metadata
 from importlib import util as import_util
 from shutil import which
@@ -178,6 +180,55 @@ def _default_model_for(provider: str, task_type: str) -> str:
     provider = provider.lower()
     task = task_type.lower()
     return DEFAULT_MODEL_MAP.get(task, {}).get(provider, "")
+
+
+def run_ollama_chat(
+    model: str,
+    prompt: str,
+    *,
+    stream: bool = False,
+    base_url: str | None = None,
+    timeout: float = 30.0,
+) -> str:
+    """Call the Ollama /api/generate endpoint and return aggregated text."""
+
+    base = base_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+    endpoint = f"{base.rstrip('/')}/api/generate"
+    payload = {"model": model, "prompt": prompt, "stream": stream}
+    text_parts: list[str] = []
+
+    try:
+        if stream:
+            with httpx.stream("POST", endpoint, json=payload, timeout=timeout) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        LOGGER.warning("Unable to decode Ollama stream chunk: %s", line)
+                        continue
+                    chunk = data.get("response") or ""
+                    if not chunk and isinstance(data.get("message"), dict):
+                        chunk = data["message"].get("content", "")
+                    if chunk:
+                        text_parts.append(str(chunk))
+        else:
+            response = httpx.post(endpoint, json=payload, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            chunk = data.get("response") or ""
+            if not chunk and isinstance(data.get("message"), dict):
+                chunk = data["message"].get("content", "")
+            if chunk:
+                text_parts.append(str(chunk))
+    except httpx.HTTPError as exc:
+        LOGGER.warning("Ollama request failed: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive path
+        LOGGER.warning("Unexpected error contacting Ollama: %s", exc)
+
+    return "".join(text_parts)
 
 
 def select_model(
