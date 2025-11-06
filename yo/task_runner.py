@@ -1,12 +1,13 @@
-"""Codex task lifecycle runner."""
+"""Codex task lifecycle runner with structured finalize hook."""
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 import shutil
-import datetime
-import sys
 import importlib
+
+from yo.hooks.codex_finalize import finalize_task
 
 
 def run_tasks() -> None:
@@ -18,21 +19,48 @@ def run_tasks() -> None:
     for directory in (active, completed, failed):
         directory.mkdir(parents=True, exist_ok=True)
 
-    for card in active.glob("*.md"):
+    for card in sorted(active.glob("*.md")):
         name = card.name
         print(f"[Codex] Running {name}")
-        start = datetime.datetime.utcnow().isoformat()
+        start_ts = time.perf_counter()
         version = _get_version()
-        destination = completed / name
 
         try:
-            content = card.read_text(encoding="utf-8")
-            log = "\n---\n## 🧾 Codex Execution Log\n✅ Completed {}\n".format(start)
-            card.write_text(content + log, encoding="utf-8")
+            duration = time.perf_counter() - start_ts
+            context = {
+                "operator": "Sean Gray",
+                "cwd": str(Path.cwd()),
+                "scan_path": str(active.resolve()),
+                "created": [],
+                "modified": [],
+                "deleted": [],
+                "renamed": [],
+                "tests": "not run",
+                "metrics": "n/a",
+                "commit": "pending",
+                "notes": "Task completed successfully.",
+                "duration": round(duration, 3),
+            }
+
+            finalized = finalize_task(card, context)
+            print(f"[Codex] Append validation: {finalized.get('validation_status', 'unknown')}")
+
+            with card.open("r", encoding="utf-8") as handle:
+                content = handle.read()
+
+            required = ["🧠 Version:", "📘 Notes:", "⚙️ Executor:"]
+            missing = [token for token in required if token not in content]
+
+            if missing:
+                print(f"[Codex] ⚠️ Structured append missing tokens {missing}; skipping archive.")
+                shutil.move(card, failed / name)
+                continue
+
+            print("[Codex] ✅ Structured append detected, proceeding to archive.")
+            destination = completed / name
             shutil.move(card, destination)
-            print(f"[Codex] {name} → completed")
             _print_success_echo(version, destination)
-        except Exception as exc:  # pragma: no cover - defensive path
+        except Exception as exc:  # pragma: no cover - defensive guard
             shutil.move(card, failed / name)
             print(f"[Codex] {name} → failed ({exc})")
 
@@ -53,8 +81,8 @@ def _print_success_echo(version: str, archived_path: Path) -> None:
     print("Manual Publish Commands:")
     commands = [
         "git add -A",
-        "git commit -m \"<commit message>\"",
-        f"git tag -a {version} -m \"<tag message>\"",
+        f'git commit -m "release: {version} — Codex task batch"',
+        f'git tag -a {version} -m "Yo {version} — Codex task batch"',
         "git push origin main --tags",
     ]
     for cmd in commands:
