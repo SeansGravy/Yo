@@ -132,6 +132,7 @@ scripts/setup_yo_dev.sh
 - `yo chat verify "ping"` issues a live `/api/chat` request and prints elapsed time, token count, and whether fallback fired.
 - Use `yo chat verify --debug` to inspect the raw JSON payload returned by the API for deeper diagnostics.
 - New metrics `chat_live_success_rate` and `chat_tokens_avg` surface in `yo metrics summarize` and `yo analytics report`, allowing CI and dashboards to alert whenever live replies dip below the expected success threshold.
+- `yo health stream --host 127.0.0.1 --port 8000` exercises the WebSocket path end-to-end, failing fast if no tokens arrive within 10 seconds.
 
 ## 🔐 Signature & Clone Verification
 

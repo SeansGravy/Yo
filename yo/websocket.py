@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Sequence, Set
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 from yo.events import publish_event
+from yo.metrics import record_metric
 from yo.logging_utils import get_logger
 
 try:  # pragma: no cover - watchfiles optional
@@ -219,12 +221,22 @@ class ConnectionManager:
         failures: List[str] = []
         stale: List[WebSocket] = []
         for websocket in targets:
+            state = getattr(websocket, "application_state", None)
+            if state is not None and state != WebSocketState.CONNECTED:
+                LOGGER.warning("Skipping send for disconnected websocket (session=%s state=%s)", session_id, state)
+                failures.append(f"state={state}")
+                stale.append(websocket)
+                continue
             try:
                 await websocket.send_json(payload)
                 successes += 1
             except Exception as exc:  # pragma: no cover - transport failure
                 log_ws_error(f"chat emit failed session={session_id}: {exc}")
                 failures.append(str(exc))
+                try:
+                    await websocket.close(code=1001)
+                except Exception:
+                    pass
                 stale.append(websocket)
 
         for websocket in stale:
@@ -246,3 +258,6 @@ class ConnectionManager:
             error=error_message,
             latency_ms=latency_ms,
         )
+
+        if event_type == "chat_complete":
+            record_metric("chat_stream_health", ok=1 if success else 0)

@@ -427,6 +427,7 @@ If the model raises or returns an empty body, Yo substitutes a human-readable pl
 - Run `python3 -m yo.cli chat verify "ping"` to issue a live `/api/chat` request and capture elapsed time, token count, and fallback state; append `--debug` to print the raw JSON payload.
 - The metrics log now includes `chat_live_success_rate` and `chat_tokens_avg`, so `yo metrics summarize` and `yo analytics report` highlight long-term success rates alongside average token counts.
 - Combine the CLI probe with `yo health chat --force-fallback` to distinguish infrastructure outages (no reply) from model-level regressions (fallback or empty text).
+- Use `yo health stream` to verify that `/ws/chat/<session>` produces token events within the expected timeout; the command reports token counts and fails fast when the stream stalls.
 
 ---
 

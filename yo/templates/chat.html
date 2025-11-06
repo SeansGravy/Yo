@@ -333,11 +333,15 @@
           } else {
             statusEl.textContent = '⚠️ Chat stream disconnected.';
           }
+          try { chatSocket.close(); } catch (error) { /* noop */ }
         };
         chatSocket.onclose = () => {
           if (debugEnabled) {
-            updateDebug('WebSocket closed');
+            updateDebug('WebSocket closed; attempting reconnect');
           }
+          statusEl.textContent = 'Reconnecting…';
+          chatSocket = null;
+          setTimeout(() => connectChatStream(), 1500);
         };
       }
 

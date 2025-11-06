@@ -1483,6 +1483,9 @@ def _handle_health_report(args: argparse.Namespace, __: YoBrain | None = None) -
     if action == "ws":
         _handle_health_ws(args, None)
         return
+    if action == "stream":
+        _handle_health_stream(args, None)
+        return
     if action != "report":
         raise SystemExit(f"Unknown health action '{action}'. Try `yo health report`.")
 
@@ -2216,6 +2219,67 @@ def _handle_health_ws(args: argparse.Namespace, __: YoBrain | None = None) -> No
 
     print("❌ WebSocket probe did not receive completion frame.")
     raise SystemExit(1)
+
+
+def _handle_health_stream(args: argparse.Namespace, __: YoBrain | None = None) -> None:
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 8000)
+    timeout = getattr(args, "timeout", 10.0)
+    message = getattr(args, "message", "probe")
+    namespace = getattr(args, "ns", "default") or "default"
+
+    session_id = f"health-{int(time.time() * 1000)}"
+    ws_url = f"ws://{host}:{port}/ws/chat/{session_id}"
+    chat_url = f"http://{host}:{port}/api/chat"
+
+    async def _probe_stream() -> tuple[int, dict[str, Any]]:
+        tokens_seen = 0
+        async with websockets.connect(ws_url) as websocket:
+            response = httpx.post(
+                chat_url,
+                json={
+                    "namespace": namespace,
+                    "message": message,
+                    "session_id": session_id,
+                    "stream": True,
+                },
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    incoming = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    break
+                try:
+                    event = json.loads(incoming)
+                except json.JSONDecodeError:
+                    continue
+                event_type = event.get("type")
+                if event_type == "chat_token":
+                    tokens_seen += len(event.get("token") or "")
+                elif event_type in {"chat_message", "chat_complete"}:
+                    reply_payload = event.get("reply") or {}
+                    if isinstance(reply_payload, dict):
+                        tokens_seen += len(str(reply_payload.get("text") or "").split())
+                    break
+            return tokens_seen, payload
+
+    try:
+        tokens, payload = asyncio.run(_probe_stream())
+    except Exception as exc:
+        print(f"❌ Stream probe failed: {exc}")
+        raise SystemExit(1) from exc
+
+    if tokens <= 0:
+        print("❌ Stream probe did not receive any tokens.")
+        raise SystemExit(1)
+
+    print("✅ Stream probe succeeded")
+    print(f"   Tokens observed: {tokens}")
+    print(f"   Fallback: {payload.get('fallback')}")
 
 
 def _ensure_port_available(host: str, port: int) -> None:
