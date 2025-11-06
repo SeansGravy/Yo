@@ -1,16 +1,16 @@
 {
   "default": {
-    "last_ingested": "2025-11-05T18:22:11.965004",
+    "last_ingested": "2025-11-05T19:07:06.457358",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 428,
-    "chunks": 5200,
+    "documents": 442,
+    "chunks": 5384,
     "documents_delta": 7,
-    "chunks_delta": 91,
-    "ingest_runs": 56,
-    "growth_percent": 1.66270783847981,
+    "chunks_delta": 92,
+    "ingest_runs": 58,
+    "growth_percent": 1.6091954022988506,
     "history": [
       {
         "timestamp": "2025-11-04T20:38:12.363449",
@@ -571,21 +571,41 @@
         "documents_previous": 421,
         "chunks_previous": 5109,
         "growth_percent": 1.66270783847981
+      },
+      {
+        "timestamp": "2025-11-05T19:06:02.575503",
+        "documents_added": 7,
+        "chunks_added": 92,
+        "documents_total": 435,
+        "chunks_total": 5292,
+        "documents_previous": 428,
+        "chunks_previous": 5200,
+        "growth_percent": 1.6355140186915886
+      },
+      {
+        "timestamp": "2025-11-05T19:07:06.457358",
+        "documents_added": 7,
+        "chunks_added": 92,
+        "documents_total": 442,
+        "chunks_total": 5384,
+        "documents_previous": 435,
+        "chunks_previous": 5292,
+        "growth_percent": 1.6091954022988506
       }
     ]
   },
   "ingest_pdf": {
-    "last_ingested": "2025-11-05T18:21:17.675453",
+    "last_ingested": "2025-11-05T19:06:14.694596",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 31,
-    "chunks": 31,
+    "documents": 32,
+    "chunks": 32,
     "documents_delta": 1,
     "chunks_delta": 1,
-    "ingest_runs": 28,
-    "growth_percent": 3.3333333333333335,
+    "ingest_runs": 29,
+    "growth_percent": 3.225806451612903,
     "history": [
       {
         "timestamp": "2025-11-04T20:38:24.869930",
@@ -866,21 +886,31 @@
         "documents_previous": 30,
         "chunks_previous": 30,
         "growth_percent": 3.3333333333333335
+      },
+      {
+        "timestamp": "2025-11-05T19:06:14.694596",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 32,
+        "chunks_total": 32,
+        "documents_previous": 31,
+        "chunks_previous": 31,
+        "growth_percent": 3.225806451612903
       }
     ]
   },
   "ingest_xlsx": {
-    "last_ingested": "2025-11-05T18:21:23.168449",
+    "last_ingested": "2025-11-05T19:06:20.169920",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 30,
-    "chunks": 30,
+    "documents": 31,
+    "chunks": 31,
     "documents_delta": 1,
     "chunks_delta": 1,
-    "ingest_runs": 28,
-    "growth_percent": 3.4482758620689653,
+    "ingest_runs": 29,
+    "growth_percent": 3.3333333333333335,
     "history": [
       {
         "timestamp": "2025-11-04T20:38:30.463747",
@@ -1161,28 +1191,38 @@
         "documents_previous": 29,
         "chunks_previous": 29,
         "growth_percent": 3.4482758620689653
+      },
+      {
+        "timestamp": "2025-11-05T19:06:20.169920",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 31,
+        "chunks_total": 31,
+        "documents_previous": 30,
+        "chunks_previous": 30,
+        "growth_percent": 3.3333333333333335
       }
     ]
   },
   "test": {
-    "last_ingested": "2025-11-05T18:21:10.692915",
+    "last_ingested": "2025-11-05T19:06:08.401258",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
     "documents": 7,
-    "chunks": 91,
+    "chunks": 92,
     "documents_delta": 7,
-    "chunks_delta": 91,
+    "chunks_delta": 92,
     "ingest_runs": 1,
     "growth_percent": 100.0,
     "history": [
       {
-        "timestamp": "2025-11-05T18:21:10.692915",
+        "timestamp": "2025-11-05T19:06:08.401258",
         "documents_added": 7,
-        "chunks_added": 91,
+        "chunks_added": 92,
         "documents_total": 7,
-        "chunks_total": 91,
+        "chunks_total": 92,
         "documents_previous": 0,
         "chunks_previous": 0,
         "growth_percent": 100.0

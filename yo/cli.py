@@ -708,7 +708,43 @@ def _handle_add(args: argparse.Namespace, brain: YoBrain | None) -> None:
 
 def _handle_ask(args: argparse.Namespace, brain: YoBrain | None) -> None:
     assert brain is not None
-    brain.ask(args.question, namespace=args.ns, web=args.web)
+    namespace = args.ns or getattr(brain, "active_namespace", _active_namespace_default()) or _active_namespace_default()
+
+    if getattr(args, "debug", False):
+        timeout = getattr(args, "timeout", None)
+        effective_timeout = timeout if timeout is not None else float(os.environ.get("YO_CHAT_TIMEOUT", 10.0))
+        print(
+            f"[CHAT TIMING] start namespace={namespace} model={getattr(brain, 'model_name', 'unknown')} "
+            f"timeout={effective_timeout:.1f}s"
+        )
+
+        async def _run_chat() -> dict[str, Any]:
+            return await brain.chat_async(
+                message=args.question,
+                namespace=namespace,
+                history=None,
+                web=args.web,
+                timeout=effective_timeout,
+            )
+
+        start = time.perf_counter()
+        payload = asyncio.run(_run_chat())
+        elapsed = time.perf_counter() - start
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or payload.get("response") or "")
+        else:
+            text = str(payload or "")
+        text = text.strip()
+        print(
+            f"[CHAT TIMING] finished elapsed={elapsed:.2f}s text_len={len(text)} "
+            f"fallback={payload.get('fallback_used') if isinstance(payload, dict) else 'n/a'}"
+        )
+        print("\n💬 Yo says:\n")
+        print(text or "(no text)")
+        return
+
+    brain.ask(args.question, namespace=namespace, web=args.web)
 
 
 def _handle_summarize(args: argparse.Namespace, brain: YoBrain | None) -> None:
@@ -2814,6 +2850,16 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("question", help="Question to ask")
     _add_ns_options(ask_parser)
     ask_parser.add_argument("--web", action="store_true", help="Blend cached web context into answers")
+    ask_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print chat timing diagnostics instead of synthesized answer",
+    )
+    ask_parser.add_argument(
+        "--timeout",
+        type=float,
+        help="Override chat timeout (seconds) when --debug is used",
+    )
     ask_parser.set_defaults(handler=_handle_ask)
 
     chat_parser = _add_top_level("chat", help_text="Chat with YoBrain", category="Retrieval")

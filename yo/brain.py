@@ -1147,6 +1147,7 @@ class YoBrain:
         namespace: str | None = None,
         history: list[dict[str, str]] | None = None,
         web: bool = False,
+        stream: bool = False,
     ) -> dict[str, Any]:
         """Return a conversational reply using optional prior history."""
 
@@ -1156,19 +1157,43 @@ class YoBrain:
         namespace = namespace or self.active_namespace
         conversation, memory_context, citations = self._prepare_chat(message, namespace, history, web)
 
-        response = self.client.chat(model=self.model_name, messages=conversation)
+        chat_kwargs: dict[str, Any] = {"model": self.model_name, "messages": conversation}
+        if stream:
+            chat_kwargs["stream"] = True
+
+        response = self.client.chat(**chat_kwargs)
         reply = ""
-        if isinstance(response, dict):
-            message_block = response.get("message")
-            if isinstance(message_block, dict):
-                reply = message_block.get("content") or ""
-            reply = reply or response.get("response", "")
-        reply = reply or "(No response generated.)"
+        stream_citations: list[str] = []
+
+        if stream and hasattr(response, "__iter__") and not isinstance(response, dict):
+            chunks: list[str] = []
+            for chunk in response:
+                if not isinstance(chunk, dict):
+                    continue
+                message_block = chunk.get("message")
+                content = ""
+                if isinstance(message_block, dict):
+                    content = message_block.get("content") or ""
+                content = content or chunk.get("response") or ""
+                if content:
+                    chunks.append(str(content))
+                chunk_citations = chunk.get("citations")
+                if chunk_citations:
+                    stream_citations = chunk_citations
+            reply = "".join(chunks)
+        else:
+            if isinstance(response, dict):
+                message_block = response.get("message")
+                if isinstance(message_block, dict):
+                    reply = message_block.get("content") or ""
+                reply = reply or response.get("response", "")
+            elif isinstance(response, str):
+                reply = response
 
         payload: dict[str, Any] = {
-            "response": reply.strip(),
+            "response": (reply or "(No response generated.)").strip(),
             "context": memory_context,
-            "citations": citations,
+            "citations": stream_citations or citations,
         }
         return payload
 
@@ -1187,9 +1212,17 @@ class YoBrain:
             raise ValueError("Message cannot be empty.")
 
         loop = asyncio.get_running_loop()
-        effective_timeout = timeout if timeout is not None else float(os.environ.get("YO_CHAT_TIMEOUT", 8.0))
+        effective_timeout = timeout if timeout is not None else float(os.environ.get("YO_CHAT_TIMEOUT", 10.0))
         namespace = namespace or self.active_namespace
         preview = message[:80]
+        start_time = time.perf_counter()
+        self._logger.info(
+            "chat_async start namespace=%s model=%s preview=%s timeout=%.1fs",
+            namespace,
+            getattr(self, "model_name", "unknown"),
+            preview,
+            effective_timeout,
+        )
 
         def _invoke() -> Any:
             return self.chat(
@@ -1197,6 +1230,7 @@ class YoBrain:
                 namespace=namespace,
                 history=history,
                 web=web,
+                stream=False,
             )
 
         try:
@@ -1215,13 +1249,33 @@ class YoBrain:
                 if not isinstance(payload.get("response"), str) or not payload.get("response"):
                     payload["response"] = text_value
                 payload.setdefault("citations", [])
+                elapsed = time.perf_counter() - start_time
+                self._logger.info(
+                    "chat_async complete namespace=%s elapsed=%.2fs text_len=%d",
+                    namespace,
+                    elapsed,
+                    len(text_value),
+                )
                 return payload
             text_value = str(result or "").strip()
             if not text_value:
                 text_value = "(Model returned no text)"
-            return {"text": text_value}
+            elapsed = time.perf_counter() - start_time
+            self._logger.info(
+                "chat_async complete namespace=%s elapsed=%.2fs text_len=%d",
+                namespace,
+                elapsed,
+                len(text_value),
+            )
+            return {"text": text_value, "response": text_value, "citations": []}
         except asyncio.TimeoutError:
-            self._logger.warning("chat_async hit timeout namespace=%s message=%s", namespace, preview)
+            elapsed = time.perf_counter() - start_time
+            self._logger.warning(
+                "chat_async timeout namespace=%s elapsed=%.2fs preview=%s",
+                namespace,
+                elapsed,
+                preview,
+            )
             timeout_text = "(Timed out waiting for model response)"
             return {
                 "text": timeout_text,
@@ -1234,7 +1288,13 @@ class YoBrain:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._logger.exception("chat_async failed namespace=%s: %s", namespace, exc)
+            elapsed = time.perf_counter() - start_time
+            self._logger.exception(
+                "chat_async failed namespace=%s elapsed=%.2fs error=%s",
+                namespace,
+                elapsed,
+                exc,
+            )
             failure_text = f"[Chat error: {exc}]"
             return {
                 "text": failure_text,
