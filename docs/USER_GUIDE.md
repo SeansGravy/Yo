@@ -404,6 +404,24 @@ python3 -m yo.cli health web --host 127.0.0.1 --port 8010 --timeout 5
 * Need to escalate an unresolved chat disconnect? Run `yo logs collect --chat-bug [--har <browser.har>]` to zip startup logs, WebSocket errors, a metrics tail, and any captured HAR files under `data/logs/chat_bug_*.zip`.
 * The end-to-end smoke test (`tests/test_web_e2e_port.py`) starts the server in a subprocess and asserts `/api/health`, `/dashboard`, `/api/chat`, and `/ws/chat/*` all respond. Run it locally with `python3 -m pytest tests/test_web_e2e_port.py -q` to replicate production issues.
 
+### 4.27 Fallback Message Contract
+
+Every REST fallback now yields a consistent payload so the browser can always finish rendering the assistant bubble:
+
+```json
+{
+  "type": "chat_message",
+  "session_id": "abc123",
+  "namespace": "default",
+  "stream": false,
+  "fallback": true,
+  "reply": { "text": "(Timed out waiting for model response)" },
+  "history": [ { "user": "Hi", "assistant": "(Timed out waiting for model response)" } ]
+}
+```
+
+If the model raises or returns an empty body, Yo substitutes a human-readable placeholder (`(Model returned no text)`, `(Timed out waiting for model response)`, or `[Chat error: …]`). Use `yo telemetry trace --session <id>` to inspect delivery timing across `/api/chat` and the WebSocket stream when debugging silent replies.
+
 ---
 
 ## 5. Example Session

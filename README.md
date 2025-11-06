@@ -108,6 +108,7 @@ scripts/setup_yo_dev.sh
 - Launch with instrumentation: `python3 -m yo.cli web --debug --port 8010` (or `yo web --debug --port 8010`). Debug mode enables asyncio tracing, faulthandler dumps, and request logging to `data/logs/web_startup.log`.
 - If the server stalls, inspect `data/logs/web_startup.log`, `data/logs/ws_errors.log`, and `data/logs/web_deadlock.dump` for the stuck coroutine.
 - Every `/api/chat` call now returns a `{type: "chat_message", reply: {text: …}}` payload—fallbacks included—so the browser always renders a visible assistant bubble.
+- If a model stalls or returns `{}`, the fallback path injects a readable placeholder like `(Timed out waiting for model response)` instead of leaving the bubble blank.
 - Quickly verify availability with `yo health web --host 127.0.0.1 --port 8010 --timeout 5`; follow up with `yo health chat` / `yo health ws` to assert `/api/chat` replies and `/ws/chat` streams produce tokens.
 - `/chat` should render immediately. If a plain `curl http://127.0.0.1:8010/chat` hangs or takes >1s, rerun `yo health web` (now checks `/chat` latency) and inspect `data/logs/web_startup.log` + `data/logs/chat_timing.log` for slow renders.
 - Capture a reproducible diagnostics bundle with `yo logs collect --chat-bug [--har <browser.har>]`—the ZIP contains recent startup logs, WebSocket errors, metrics tail, and optional HAR traces under `data/logs/`.

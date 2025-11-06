@@ -1199,45 +1199,30 @@ class YoBrain:
                 web=web,
             )
 
-        def _normalise_result(result: Any) -> dict[str, Any]:
-            default_text = "[no text generated]"
-            payload: dict[str, Any] = {
-                "text": default_text,
-                "response": default_text,
-                "context": None,
-                "citations": [],
-            }
-            if isinstance(result, dict):
-                payload.update(result)
-                text_candidate = str(payload.get("text") or "").strip()
-                if not text_candidate:
-                    text_candidate = str(payload.get("response") or "").strip()
-                if not text_candidate:
-                    text_candidate = str(payload.get("reply") or "").strip()
-                if not text_candidate:
-                    text_candidate = default_text
-                payload["text"] = text_candidate
-                response_value = str(payload.get("response") or "").strip()
-                payload["response"] = response_value or text_candidate
-                payload["citations"] = payload.get("citations") or []
-                return payload
-            if isinstance(result, str):
-                text_candidate = result.strip() or default_text
-                payload["text"] = text_candidate
-                payload["response"] = text_candidate
-                return payload
-            text_candidate = str(result).strip() or default_text
-            payload["text"] = text_candidate
-            payload["response"] = text_candidate
-            return payload
-
         try:
             invoke_future = asyncio.wait_for(loop.run_in_executor(None, _invoke), timeout=effective_timeout)
             result = await asyncio.shield(invoke_future)
-            return _normalise_result(result)
+            if isinstance(result, dict):
+                payload = dict(result)
+                text_value = str(payload.get("text") or "").strip()
+                if not text_value:
+                    text_value = str(payload.get("response") or "").strip()
+                if not text_value:
+                    text_value = str(payload.get("reply") or "").strip()
+                if not text_value:
+                    text_value = "(Model returned no text)"
+                payload["text"] = text_value
+                if not isinstance(payload.get("response"), str) or not payload.get("response"):
+                    payload["response"] = text_value
+                payload.setdefault("citations", [])
+                return payload
+            text_value = str(result or "").strip()
+            if not text_value:
+                text_value = "(Model returned no text)"
+            return {"text": text_value}
         except asyncio.TimeoutError:
             self._logger.warning("chat_async hit timeout namespace=%s message=%s", namespace, preview)
-            timeout_text = "[timed out waiting for model]"
+            timeout_text = "(Timed out waiting for model response)"
             return {
                 "text": timeout_text,
                 "response": timeout_text,
@@ -1250,7 +1235,7 @@ class YoBrain:
             raise
         except Exception as exc:
             self._logger.exception("chat_async failed namespace=%s: %s", namespace, exc)
-            failure_text = "[fallback reply unavailable]"
+            failure_text = f"[Chat error: {exc}]"
             return {
                 "text": failure_text,
                 "response": failure_text,

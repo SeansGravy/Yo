@@ -927,6 +927,20 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         reply_dict.get("text", "")[:120],
                     )
                     chat_logger.info(
+                        "chat fallback namespace=%s txt_len=%d",
+                        namespace,
+                        len(reply_dict.get("text", "") or ""),
+                    )
+                    _write_chat_timing(
+                        {
+                            "event": "fallback_text",
+                            "namespace": namespace,
+                            "session_id": session_id,
+                            "txt_len": len(reply_dict.get("text", "") or ""),
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                        }
+                    )
+                    chat_logger.info(
                         "deliver fallback sid=%s stream=%s txt_len=%d",
                         session_id,
                         False,
@@ -952,8 +966,23 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                     except Exception as exc:
                         fallback_error = exc
                         chat_logger.exception("fallback chat_async failed namespace=%s: %s", namespace, exc)
-                    reply_dict = _coerce_reply_dict(fallback_payload, default_text=timeout_reply)
-                    reply_text = reply_dict["text"]
+                    final_text = ""
+                    if fallback_error is not None:
+                        final_text = f"[Error: {fallback_error}]"
+                    else:
+                        if isinstance(fallback_payload, dict):
+                            final_text = (
+                                str(fallback_payload.get("text") or "")
+                                or str(fallback_payload.get("reply") or "")
+                                or str(fallback_payload.get("response") or "")
+                            )
+                        elif fallback_payload is not None:
+                            final_text = str(fallback_payload)
+                    final_text = (final_text or "").strip()
+                    if not final_text:
+                        final_text = "[fallback reply unavailable]"
+                    reply_dict = {"text": final_text}
+                    reply_text = final_text
                     context = None
                     citations: list[Any] = []
                     if isinstance(fallback_payload, dict):
@@ -986,6 +1015,20 @@ async def api_chat(payload: ChatRequest) -> JSONResponse:
                         "fallback result namespace=%s text=%s",
                         namespace,
                         reply_dict.get("text", "")[:120],
+                    )
+                    chat_logger.info(
+                        "chat fallback namespace=%s txt_len=%d",
+                        namespace,
+                        len(reply_dict.get("text", "") or ""),
+                    )
+                    _write_chat_timing(
+                        {
+                            "event": "fallback_text",
+                            "namespace": namespace,
+                            "session_id": session_id,
+                            "txt_len": len(reply_dict.get("text", "") or ""),
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                        }
                     )
                     chat_logger.info(
                         "deliver fallback sid=%s stream=%s txt_len=%d",

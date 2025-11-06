@@ -105,3 +105,59 @@ def test_chat_fallback_always_returns_text(monkeypatch: pytest.MonkeyPatch) -> N
     assert payload.get("type") == "chat_message"
     assert reply_text != ""
     assert payload.get("history"), "Expected history to be returned for fallback reply."
+
+
+def test_fallback_returns_text_when_model_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BlankBrain:
+        def chat(
+            self,
+            *,
+            message: str,
+            namespace: str | None = None,
+            history: List[Dict[str, str]] | None = None,
+            web: bool = False,
+        ) -> Dict[str, Any]:
+            return {"response": ""}
+
+        async def chat_async(
+            self,
+            *,
+            message: str,
+            namespace: str | None = None,
+            history: List[Dict[str, str]] | None = None,
+            web: bool = False,
+            timeout: float | None = None,
+        ) -> Dict[str, Any]:
+            return {"text": ""}
+
+        def chat_stream(self, **_: Any) -> List[Dict[str, Any]]:
+            return []
+
+    monkeypatch.setattr(webui, "get_brain", lambda: BlankBrain())
+    monkeypatch.setattr(webui, "chat_store", ChatSessionStore())
+    monkeypatch.setenv("YO_CHAT_STREAM_FALLBACK", "force")
+
+    async def _noop(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(webui.broadcaster, "start", _noop)
+    monkeypatch.setattr(webui.broadcaster, "stop", _noop)
+
+    with TestClient(webui.app) as client:
+        response = client.post(
+            "/api/chat",
+            json={
+                "namespace": "default",
+                "message": "ping",
+                "session_id": "blank-fallback",
+                "stream": False,
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload.get("fallback") is True
+    assert payload.get("stream") is False
+    reply_payload = payload.get("reply") or {}
+    reply_text = (reply_payload.get("text") or "").strip()
+    assert reply_text != ""
