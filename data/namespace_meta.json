@@ -1,37 +1,17 @@
 {
   "default": {
-    "last_ingested": "2025-11-06T22:46:00.928117",
+    "last_ingested": "2025-11-06T23:10:22.321659",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 758,
-    "chunks": 9564,
+    "documents": 774,
+    "chunks": 9758,
     "documents_delta": 8,
     "chunks_delta": 97,
-    "ingest_runs": 102,
-    "growth_percent": 1.0666666666666667,
+    "ingest_runs": 104,
+    "growth_percent": 1.0443864229765014,
     "history": [
-      {
-        "timestamp": "2025-11-04T21:19:21.088313",
-        "documents_added": 7,
-        "chunks_added": 73,
-        "documents_total": 57,
-        "chunks_total": 763,
-        "documents_previous": 50,
-        "chunks_previous": 690,
-        "growth_percent": 14.000000000000002
-      },
-      {
-        "timestamp": "2025-11-04T21:20:28.593793",
-        "documents_added": 7,
-        "chunks_added": 73,
-        "documents_total": 64,
-        "chunks_total": 836,
-        "documents_previous": 57,
-        "chunks_previous": 763,
-        "growth_percent": 12.280701754385964
-      },
       {
         "timestamp": "2025-11-04T21:38:30.866548",
         "documents_added": 7,
@@ -1011,21 +991,41 @@
         "documents_previous": 750,
         "chunks_previous": 9467,
         "growth_percent": 1.0666666666666667
+      },
+      {
+        "timestamp": "2025-11-06T23:09:14.068599",
+        "documents_added": 8,
+        "chunks_added": 97,
+        "documents_total": 766,
+        "chunks_total": 9661,
+        "documents_previous": 758,
+        "chunks_previous": 9564,
+        "growth_percent": 1.0554089709762533
+      },
+      {
+        "timestamp": "2025-11-06T23:10:22.321659",
+        "documents_added": 8,
+        "chunks_added": 97,
+        "documents_total": 774,
+        "chunks_total": 9758,
+        "documents_previous": 766,
+        "chunks_previous": 9661,
+        "growth_percent": 1.0443864229765014
       }
     ]
   },
   "ingest_pdf": {
-    "last_ingested": "2025-11-06T22:45:03.139231",
+    "last_ingested": "2025-11-06T23:09:26.814443",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 54,
-    "chunks": 54,
+    "documents": 55,
+    "chunks": 55,
     "documents_delta": 1,
     "chunks_delta": 1,
-    "ingest_runs": 51,
-    "growth_percent": 1.8867924528301887,
+    "ingest_runs": 52,
+    "growth_percent": 1.8518518518518516,
     "history": [
       {
         "timestamp": "2025-11-04T20:38:24.869930",
@@ -1536,21 +1536,31 @@
         "documents_previous": 53,
         "chunks_previous": 53,
         "growth_percent": 1.8867924528301887
+      },
+      {
+        "timestamp": "2025-11-06T23:09:26.814443",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 55,
+        "chunks_total": 55,
+        "documents_previous": 54,
+        "chunks_previous": 54,
+        "growth_percent": 1.8518518518518516
       }
     ]
   },
   "ingest_xlsx": {
-    "last_ingested": "2025-11-06T22:45:09.024350",
+    "last_ingested": "2025-11-06T23:09:32.781063",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
     },
-    "documents": 53,
-    "chunks": 53,
+    "documents": 54,
+    "chunks": 54,
     "documents_delta": 1,
     "chunks_delta": 1,
-    "ingest_runs": 51,
-    "growth_percent": 1.9230769230769231,
+    "ingest_runs": 52,
+    "growth_percent": 1.8867924528301887,
     "history": [
       {
         "timestamp": "2025-11-04T20:38:30.463747",
@@ -2061,11 +2071,21 @@
         "documents_previous": 52,
         "chunks_previous": 52,
         "growth_percent": 1.9230769230769231
+      },
+      {
+        "timestamp": "2025-11-06T23:09:32.781063",
+        "documents_added": 1,
+        "chunks_added": 1,
+        "documents_total": 54,
+        "chunks_total": 54,
+        "documents_previous": 53,
+        "chunks_previous": 53,
+        "growth_percent": 1.8867924528301887
       }
     ]
   },
   "test": {
-    "last_ingested": "2025-11-06T22:44:56.393095",
+    "last_ingested": "2025-11-06T23:09:20.160197",
     "config": {
       "model": "ollama:llama3",
       "embed_model": "ollama:nomic-embed-text"
@@ -2078,7 +2098,7 @@
     "growth_percent": 100.0,
     "history": [
       {
-        "timestamp": "2025-11-06T22:44:56.393095",
+        "timestamp": "2025-11-06T23:09:20.160197",
         "documents_added": 8,
         "chunks_added": 97,
         "documents_total": 8,
