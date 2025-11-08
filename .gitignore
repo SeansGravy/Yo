@@ -1,12 +1,26 @@
+# --- Yo project ---
+# Ignore virtual environment
+.venv/
+venv/
+
+# Ignore Python caches
 __pycache__/
-.env
+*.pyc
+
+# Ignore data, logs, and Milvus DB
+data/
+*.db
+*.jsonl
 *.log
-__generated__/
 
-# Generated sample ingestion files
-fixtures/ingest/brochure.pdf
-fixtures/ingest/sample.xlsx
+# Ignore Ollama/model artifacts
+models/
+.ollama/
 
-.pytest_cache/
-.coverage
-data/logs/
+# Ignore OS/editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Ignore local test results
+yo_test_results_*.log
